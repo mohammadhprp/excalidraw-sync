@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Excalidraw Sync — Token</title>
+    <link rel="stylesheet" href="./options.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Excalidraw Sync</h1>
+      <p class="muted">
+        The GitHub fine-grained PAT is stored only by the extension, in
+        <code>chrome.storage.local</code>. It is never sent to the Excalidraw
+        page and never read back into the sync panel.
+      </p>
+
+      <section>
+        <h2>Repository</h2>
+        <p id="summary" class="summary">Loading…</p>
+      </section>
+
+      <section>
+        <h2>Access token</h2>
+        <p id="token-state" class="state" role="status" aria-live="polite"></p>
+        <label for="token">Fine-grained PAT (Contents: Read and write)</label>
+        <div class="row">
+          <input
+            id="token"
+            type="password"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="github_pat_…"
+          />
+          <button id="save-token" type="button">Save token</button>
+        </div>
+        <p id="status" class="status" role="status" aria-live="polite"></p>
+      </section>
+
+      <section>
+        <h2>Other settings</h2>
+        <p class="muted">
+          Owner, repo, branch, root path, commit template, author and smart sync
+          are edited from the sync panel on
+          <a href="https://excalidraw.com/" target="_blank" rel="noreferrer">excalidraw.com</a>.
+        </p>
+      </section>
+    </main>
+    <script type="module" src="./options.ts"></script>
+  </body>
+</html>

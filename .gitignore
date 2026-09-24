@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+coverage/
+.vite/
+
+# Environment / secrets — never commit these
+.env
+.env.*
+*.local
+
+# Editor / OS noise
+.DS_Store
+*.log
+.idea/
+.vscode/
