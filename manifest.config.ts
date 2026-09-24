@@ -12,7 +12,7 @@ import { defineManifest } from "@crxjs/vite-plugin";
 export default defineManifest({
   manifest_version: 3,
   name: "Excalidraw Sync",
-  version: "0.1.0",
+  version: "0.1.1",
   description: "Save and sync Excalidraw boards to a GitHub repository.",
   minimum_chrome_version: "120",
   permissions: ["storage"],
