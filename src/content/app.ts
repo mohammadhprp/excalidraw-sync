@@ -16,6 +16,7 @@ import {
 } from "../lib";
 import { createPanel, type Panel, type PanelActions, type PanelState } from "../ui/panel";
 import { mountPanelHost } from "../ui/host";
+import { BUILT_IN_BRANCH, resolveAdoptedBranch } from "../ui/format";
 import {
   BADGE_STORAGE_KEY,
   parseBadgePosition,
@@ -320,10 +321,44 @@ export async function startApp(): Promise<void> {
 
   async function testConnection(): Promise<void> {
     const res = await sender<ConnectionInfo>({ type: "github:testConnection" });
-    state.testResult = res.ok
-      ? `Connected: ${res.data.owner}/${res.data.repo} @ ${res.data.branch}`
-      : `Error: ${res.error}`;
-    render();
+    if (!res.ok) {
+      state.testResult = `Error: ${res.error}`;
+      render();
+      return;
+    }
+
+    const decision = resolveAdoptedBranch({
+      configuredBranch: state.settings?.branch ?? "",
+      defaultBranch: res.data.branch,
+    });
+    const prefix = `Connected: ${res.data.owner}/${res.data.repo} @ `;
+
+    if (!decision.adopted) {
+      // The confirmation must name the branch actually in effect, not just the
+      // repo default while the client would still use `main`.
+      state.testResult = `${prefix}${decision.branch}`;
+      render();
+      return;
+    }
+
+    // Adopt and persist the repo's default branch so every later Contents call
+    // uses it (the client is rebuilt from settings on each message).
+    const saved = await sender<PublicSettings>({
+      type: "settings:set",
+      patch: { branch: decision.branch },
+    });
+    if (!saved.ok) {
+      // Persisting failed: the client still uses the previous branch, so report
+      // that branch rather than the one we could not save.
+      const inEffect = (state.settings?.branch ?? "").trim() || BUILT_IN_BRANCH;
+      state.testResult = `${prefix}${inEffect}`;
+      setNotice("error", `Could not adopt the repository default branch: ${saved.error}`);
+      return;
+    }
+
+    applySettings(saved.data);
+    state.testResult = `${prefix}${decision.branch}`;
+    setNotice("info", decision.notice ?? `Using repository default branch: ${decision.branch}`);
   }
 
   /** Warn before any action that would drop unsaved local changes. */

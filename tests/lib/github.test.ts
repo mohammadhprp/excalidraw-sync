@@ -30,6 +30,7 @@ interface RecordedCall {
   method: string;
   url: string;
   body: Record<string, unknown> | null;
+  cache: string | null;
 }
 
 type Handler = (
@@ -57,7 +58,7 @@ function mockFetch(handler: Handler): {
       typeof init?.body === "string"
         ? (JSON.parse(init.body) as Record<string, unknown>)
         : null;
-    calls.push({ method, url: url.toString(), body });
+    calls.push({ method, url: url.toString(), body, cache: init?.cache ?? null });
     return Promise.resolve(handler(method, url, body));
   };
   return { fetchImpl: fetchImpl as unknown as typeof fetch, calls };
@@ -101,6 +102,9 @@ describe("saveBoard", () => {
 
     const get = calls.find((call) => call.method === "GET");
     expect(get?.url).toContain("ref=main");
+    // A read after a write must be fresh: authenticated Contents GETs opt out
+    // of the HTTP cache (GitHub sends `cache-control: private, max-age=60`).
+    expect(get?.cache).toBe("no-store");
 
     const put = putCalls(calls);
     expect(put).toHaveLength(1);
@@ -296,7 +300,7 @@ describe("saveBoard", () => {
 
 describe("readBoard", () => {
   it("GETs and base64-decodes a scene", async () => {
-    const { client } = clientFrom(() =>
+    const { client, calls } = clientFrom(() =>
       jsonResponse(200, {
         type: "file",
         sha: "blob-1",
@@ -306,6 +310,7 @@ describe("readBoard", () => {
     );
 
     await expect(client.readBoard(PATH)).resolves.toEqual(scene);
+    expect(calls[0]?.cache).toBe("no-store");
   });
 
   it("throws a clear error when the board is missing", async () => {
@@ -508,5 +513,40 @@ describe("createCollection", () => {
       boards: [],
     });
     expect(putCalls(calls)).toHaveLength(0);
+  });
+});
+
+describe("testConnection", () => {
+  it("reports the repo default branch and sends a no-store GET", async () => {
+    const { client, calls } = clientFrom(() =>
+      jsonResponse(200, {
+        private: true,
+        default_branch: "master",
+        owner: { login: "acme" },
+      }),
+    );
+
+    await expect(client.testConnection()).resolves.toEqual({
+      owner: "acme",
+      repo: "boards",
+      branch: "master",
+      private: true,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("GET");
+    expect(calls[0]?.url).toContain("/repos/acme/boards");
+    expect(calls[0]?.cache).toBe("no-store");
+  });
+
+  it("falls back to the configured branch when the repo omits default_branch", async () => {
+    const { client } = clientFrom(() =>
+      jsonResponse(200, { private: false }),
+    );
+    await expect(client.testConnection()).resolves.toMatchObject({
+      repo: "boards",
+      branch: "main",
+      private: false,
+    });
   });
 });

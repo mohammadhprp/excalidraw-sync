@@ -146,6 +146,10 @@ export function createGitHubClient(
     const res = await fetchImpl(contentUrl(path), {
       method: "GET",
       headers: headers(),
+      // Authenticated Contents GETs are cacheable (`cache-control:
+      // private, max-age=60`); without this a GET shortly after a PUT can
+      // return the previous blob sha and produce a spurious conflict.
+      cache: "no-store",
     });
     if (res.status === 404) return null;
     if (!res.ok) throw await apiError("GET", path, res);
@@ -368,7 +372,11 @@ export function createGitHubClient(
     const url = `${API_ROOT}/repos/${encodeURIComponent(
       config.owner,
     )}/${encodeURIComponent(config.repo)}`;
-    const res = await fetchImpl(url, { method: "GET", headers: headers() });
+    const res = await fetchImpl(url, {
+      method: "GET",
+      headers: headers(),
+      cache: "no-store",
+    });
     if (!res.ok) {
       throw await apiError("GET", `${config.owner}/${config.repo}`, res);
     }

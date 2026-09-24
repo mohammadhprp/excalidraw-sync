@@ -17,6 +17,7 @@ import {
   headerStatus,
   headerStatusText,
   headerTone,
+  reconcileField,
   shortSha,
   statusLabel,
   type SettingsFormValues,
@@ -578,6 +579,25 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
   wrap.append(launcher, panel);
   root.append(wrap);
 
+  /* Keyboard isolation ---------------------------------------------------- */
+  // The panel lives in a Shadow DOM: a key event from a panel field bubbles out,
+  // is retargeted to the host <div>, and reaches excalidraw.com's global keydown
+  // handler, which treats it as a canvas shortcut (preventDefault -> you cannot
+  // type or Backspace, and keys change the drawing). Excalidraw registers its
+  // own keydown/keyup handlers on `document` in the *bubble* phase (verified
+  // against the live page; the capture-phase keydown listeners there are Sentry
+  // breadcrumb instrumentation and never preventDefault). A bubble-phase
+  // boundary on the shadow root therefore runs after the panel's own target
+  // handlers and after native text editing, and stops the event before it can
+  // reach the page. `preventDefault` is deliberately NOT called, so typing,
+  // Backspace/Delete and Ctrl/Cmd+A/C/V/X in the panel's fields keep working.
+  function isolatePanelKeyboard(event: Event): void {
+    event.stopPropagation();
+  }
+  for (const type of ["keydown", "keyup", "keypress"] as const) {
+    root.addEventListener(type, isolatePanelKeyboard);
+  }
+
   /* Badge drag + layout --------------------------------------------------- */
   let drag: {
     id: number;
@@ -759,9 +779,46 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
     };
   }
 
-  function setIfUnfocused(input: HTMLInputElement | HTMLTextAreaElement, value: string): void {
-    if (root.activeElement === input) return;
-    input.value = value;
+  /**
+   * Settings fields the user has edited since the last confirmed submit. A
+   * render must never clobber these: the save flow calls `render()` with the
+   * still-stale `state.settings` before its async `settings:set` resolves, and
+   * by then the Save click has blurred the edited field — without this marker
+   * that render would overwrite the submitted text with the old persisted value
+   * and desync the display.
+   */
+  const editedFields = new Set<HTMLInputElement | HTMLTextAreaElement>();
+  const settingsFields: Array<HTMLInputElement | HTMLTextAreaElement> = [
+    ownerInput,
+    repoInput,
+    branchInput,
+    rootInput,
+    templateInput,
+    authorNameInput,
+    authorEmailInput,
+  ];
+  for (const field of settingsFields) {
+    field.addEventListener("input", () => editedFields.add(field));
+  }
+
+  /**
+   * Reconcile one field with the persisted settings. The pure rule lives in
+   * `reconcileField`: a focused or unconfirmed-edited field keeps its text;
+   * otherwise it adopts the persisted value. Once the text matches the
+   * persisted value the edit marker clears.
+   */
+  function syncField(
+    input: HTMLInputElement | HTMLTextAreaElement,
+    persisted: string,
+  ): void {
+    const result = reconcileField({
+      persisted,
+      displayed: input.value,
+      editing: root.activeElement === input,
+      edited: editedFields.has(input),
+    });
+    if (input.value !== result.value) input.value = result.value;
+    if (!result.edited) editedFields.delete(input);
   }
 
   function updateTabs(state: PanelState): void {
@@ -914,6 +971,15 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
 
     /* Settings */
     tokenState.textContent = state.hasToken ? "Token configured" : "No token yet";
+    // With a token configured, the create-a-token help is noise: hide only the
+    // "How do I create a token?" link and its disclosure, keeping the state and
+    // "Open token settings". Without a token the behavior is unchanged.
+    tokenHelpBtn.hidden = state.hasToken;
+    if (state.hasToken) {
+      tokenHelpOpen = false;
+      tokenHelp.hidden = true;
+      tokenHelpBtn.setAttribute("aria-expanded", "false");
+    }
     settingsPrimary.update({
       label: "Save settings",
       loadingLabel: "Saving…",
@@ -922,13 +988,13 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
       error: state.settingsError,
     });
     const settings = state.settings;
-    setIfUnfocused(ownerInput, settings?.owner ?? "");
-    setIfUnfocused(repoInput, settings?.repo ?? "");
-    setIfUnfocused(branchInput, settings?.branch ?? "");
-    setIfUnfocused(rootInput, settings?.rootPath ?? "");
-    setIfUnfocused(templateInput, settings?.commitMessageTemplate ?? "");
-    setIfUnfocused(authorNameInput, settings?.author.name ?? "");
-    setIfUnfocused(authorEmailInput, settings?.author.email ?? "");
+    syncField(ownerInput, settings?.owner ?? "");
+    syncField(repoInput, settings?.repo ?? "");
+    syncField(branchInput, settings?.branch ?? "");
+    syncField(rootInput, settings?.rootPath ?? "");
+    syncField(templateInput, settings?.commitMessageTemplate ?? "");
+    syncField(authorNameInput, settings?.author.name ?? "");
+    syncField(authorEmailInput, settings?.author.email ?? "");
     if (root.activeElement !== settingsSmartSync) settingsSmartSync.checked = state.smartSync;
     if (root.activeElement !== settingsSmartSyncDelay) {
       settingsSmartSyncDelay.value = String(state.smartSyncDelayMs);

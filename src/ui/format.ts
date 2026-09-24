@@ -6,7 +6,7 @@
  * secret, and `settings:get` never returns one.
  */
 
-import type { Settings } from "../lib";
+import { DEFAULT_SETTINGS, type Settings } from "../lib";
 import type { BoardView, SyncStatus } from "../content/syncController";
 
 export type Tone = "green" | "amber" | "red" | "grey";
@@ -115,6 +115,94 @@ export function shortSha(sha: string | null): string {
   return sha.slice(0, 7);
 }
 
+/**
+ * The branch name shipped as the built-in default. Read from
+ * `DEFAULT_SETTINGS.branch` so `main` has a single source of truth.
+ */
+export const BUILT_IN_BRANCH: string = DEFAULT_SETTINGS.branch;
+
+export interface AdoptBranchInput {
+  /** The branch currently configured (may be empty or the built-in default). */
+  configuredBranch: string;
+  /** The repository's default branch, as reported by the GitHub API. */
+  defaultBranch: string;
+  /** The built-in default branch name. Defaults to `"main"`. */
+  builtInDefault?: string;
+}
+
+export interface AdoptBranchResult {
+  /** The branch in effect after connecting. */
+  branch: string;
+  /** True when the repository default was adopted and must be persisted. */
+  adopted: boolean;
+  /** A user-facing notice when the default was adopted, else `null`. */
+  notice: string | null;
+}
+
+/**
+ * Decide whether a successful Test connection should adopt the repository's
+ * default branch.
+ *
+ * The repo default is adopted **only** when the configured branch is empty or
+ * still the built-in default (`"main"`). A branch the user deliberately typed
+ * is never overridden, and when the repo reports the same branch there is no
+ * change to persist. Pure, so the adopt / keep-custom / no-change cases are
+ * unit-testable without the DOM or the network.
+ */
+export function resolveAdoptedBranch(input: AdoptBranchInput): AdoptBranchResult {
+  const builtIn = input.builtInDefault ?? BUILT_IN_BRANCH;
+  const configured = input.configuredBranch.trim();
+  const repoDefault = input.defaultBranch.trim();
+  const effective = configured || builtIn;
+  const isDefaultish = configured === "" || configured === builtIn;
+  if (isDefaultish && repoDefault !== "" && repoDefault !== effective) {
+    return {
+      branch: repoDefault,
+      adopted: true,
+      notice: `Using repository default branch: ${repoDefault}`,
+    };
+  }
+  return { branch: effective, adopted: false, notice: null };
+}
+
+export interface FieldReconcileInput {
+  /** The last confirmed value persisted in settings. */
+  persisted: string;
+  /** The value currently shown in the field. */
+  displayed: string;
+  /** The field currently has keyboard focus. */
+  editing: boolean;
+  /** The field has an edit not yet confirmed by a successful submit. */
+  edited: boolean;
+}
+
+export interface FieldReconcileResult {
+  /** The value a render should display in the field. */
+  value: string;
+  /** The updated "unconfirmed edit" marker for the field. */
+  edited: boolean;
+}
+
+/**
+ * Decide what a render should display in one settings field, and whether the
+ * field still carries an unconfirmed edit.
+ *
+ * A render must never overwrite text the user is editing or has edited but not
+ * yet submitted — otherwise a render that lands while the field is momentarily
+ * unfocused (for example, the `render()` a save performs before its async
+ * `settings:set` resolves) can replace the user's text with a stale persisted
+ * value and desync the display from what was submitted. Only when the field is
+ * neither focused nor carrying an unconfirmed edit may it adopt the persisted
+ * value. Once the field's text equals the persisted value the edit marker
+ * clears, so a confirmed submit re-converges the display.
+ */
+export function reconcileField(input: FieldReconcileInput): FieldReconcileResult {
+  if (input.editing || (input.edited && input.displayed !== input.persisted)) {
+    return { value: input.displayed, edited: input.edited };
+  }
+  return { value: input.persisted, edited: false };
+}
+
 export interface SettingsFormValues {
   owner: string;
   repo: string;
@@ -135,7 +223,7 @@ export function buildSettingsPatch(values: SettingsFormValues): Partial<Settings
   return {
     owner: values.owner.trim(),
     repo: values.repo.trim(),
-    branch: values.branch.trim() || "main",
+    branch: values.branch.trim() || BUILT_IN_BRANCH,
     rootPath: values.rootPath.trim() || "excalidraw",
     commitMessageTemplate: values.commitMessageTemplate,
     author: {

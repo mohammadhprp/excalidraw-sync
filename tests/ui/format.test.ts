@@ -6,6 +6,8 @@ import {
   headerStatus,
   headerStatusText,
   headerTone,
+  reconcileField,
+  resolveAdoptedBranch,
   shortSha,
   statusLabel,
   statusTone,
@@ -93,6 +95,85 @@ describe("header status", () => {
     expect(headerTone("conflict")).toBe("red");
     expect(headerTone("error")).toBe("red");
     expect(headerTone("unconfigured")).toBe("grey");
+  });
+});
+
+describe("resolveAdoptedBranch", () => {
+  it("adopts the repository default when the configured branch is the built-in default", () => {
+    const result = resolveAdoptedBranch({
+      configuredBranch: "main",
+      defaultBranch: "master",
+    });
+    expect(result).toEqual({
+      branch: "master",
+      adopted: true,
+      notice: "Using repository default branch: master",
+    });
+  });
+
+  it("adopts the repository default when the configured branch is empty", () => {
+    expect(
+      resolveAdoptedBranch({ configuredBranch: "   ", defaultBranch: "master" }),
+    ).toMatchObject({ branch: "master", adopted: true });
+  });
+
+  it("NEVER overrides a branch the user deliberately typed", () => {
+    expect(
+      resolveAdoptedBranch({ configuredBranch: "develop", defaultBranch: "master" }),
+    ).toEqual({ branch: "develop", adopted: false, notice: null });
+  });
+
+  it("makes no change when the repo default equals the branch in effect", () => {
+    expect(
+      resolveAdoptedBranch({ configuredBranch: "main", defaultBranch: "main" }),
+    ).toEqual({ branch: "main", adopted: false, notice: null });
+    expect(
+      resolveAdoptedBranch({ configuredBranch: "main", defaultBranch: "" }),
+    ).toEqual({ branch: "main", adopted: false, notice: null });
+  });
+
+  it("honours a custom built-in default", () => {
+    expect(
+      resolveAdoptedBranch({
+        configuredBranch: "trunk",
+        defaultBranch: "master",
+        builtInDefault: "trunk",
+      }),
+    ).toMatchObject({ branch: "master", adopted: true });
+  });
+});
+
+describe("reconcileField", () => {
+  it("keeps the typed text while the field is focused, even if persisted differs", () => {
+    expect(
+      reconcileField({ persisted: "master", displayed: "develop", editing: true, edited: true }),
+    ).toEqual({ value: "develop", edited: true });
+  });
+
+  it("keeps an unconfirmed edit when the field is momentarily unfocused (the save-render window)", () => {
+    // A render runs after the Save click blurred the field but before the async
+    // settings:set resolved; the stale persisted value must not win.
+    expect(
+      reconcileField({ persisted: "master", displayed: "develop", editing: false, edited: true }),
+    ).toEqual({ value: "develop", edited: true });
+  });
+
+  it("adopts the persisted value for an untouched field", () => {
+    expect(
+      reconcileField({ persisted: "master", displayed: "", editing: false, edited: false }),
+    ).toEqual({ value: "master", edited: false });
+  });
+
+  it("never overwrites a focused field's text with the persisted value", () => {
+    expect(
+      reconcileField({ persisted: "master", displayed: "", editing: true, edited: false }),
+    ).toEqual({ value: "", edited: false });
+  });
+
+  it("re-converges and clears the edit marker once a submit confirms the value", () => {
+    expect(
+      reconcileField({ persisted: "develop", displayed: "develop", editing: false, edited: true }),
+    ).toEqual({ value: "develop", edited: false });
   });
 });
 
