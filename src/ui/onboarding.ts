@@ -20,20 +20,28 @@ export interface OnboardingInput {
   owner: string;
   repo: string;
   collectionCount: number;
-  hasBoard: boolean;
+  /**
+   * Total boards across every collection, regardless of which one is selected.
+   * The board steps are driven by the repo's content, not the local selection,
+   * so a repo that already has boards skips them even with no board open.
+   */
+  boardCount: number;
   boardSaved: boolean;
 }
 
 /**
  * Build the ordered checklist. "Connect GitHub" needs all three of token,
  * owner and repo (matching `setupState`); whitespace-only owner/repo count as
- * missing.
+ * missing. "Create a board" and "Save it" are satisfied by any board anywhere
+ * in the repo — an already-populated repo is complete for those steps even
+ * when no board is locally selected.
  */
 export function onboardingSteps(input: OnboardingInput): OnboardingStep[] {
   const connected =
     input.hasToken &&
     input.owner.trim().length > 0 &&
     input.repo.trim().length > 0;
+  const hasAnyBoard = input.boardCount > 0;
 
   return [
     {
@@ -52,13 +60,13 @@ export function onboardingSteps(input: OnboardingInput): OnboardingStep[] {
       id: "create-board",
       label: "Create a board",
       description: "A board is a drawing saved inside a collection.",
-      done: input.hasBoard,
+      done: hasAnyBoard,
     },
     {
       id: "save-board",
       label: "Save it",
       description: "Save the board to GitHub so it is backed up.",
-      done: input.boardSaved,
+      done: input.boardSaved || hasAnyBoard,
     },
   ];
 }

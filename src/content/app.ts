@@ -8,8 +8,9 @@
 
 import {
   boardFilePath,
-  type ConnectionInfo,
   type Collection,
+  type CollectionDeleteResult,
+  type ConnectionInfo,
   type PublicSettings,
   type SceneFile,
   type Settings,
@@ -29,7 +30,7 @@ import { readFilesFromIndexedDb } from "./files";
 import { computeSceneHash } from "./hash";
 import { createMessageSender, type RuntimeLike } from "./messaging";
 import { createSmartSync, type SmartSync } from "./smartSync";
-import { createSyncController } from "./syncController";
+import { createSyncController, type BoardView } from "./syncController";
 import { createDomWriteTarget, runWriteStrategies, waitForElement } from "./write";
 
 const SMART_SYNC_INTERVAL_MS = 1500;
@@ -281,6 +282,8 @@ export async function startApp(): Promise<void> {
     }
     controller.setBoard(board);
     state.activeCollection = board.collection;
+    // Reveal the opened board in its collection in the navigator.
+    state.expandedCollection = board.collection;
     smartSync?.markSynced();
     refreshLocalInfo();
     render();
@@ -292,6 +295,8 @@ export async function startApp(): Promise<void> {
     controller.setBoard({ collection: collectionSlug, name, path, sha: null });
     controller.markDirty();
     state.activeCollection = collectionSlug;
+    // Reveal the new board in the navigator rather than leaving it collapsed.
+    state.expandedCollection = collectionSlug;
     refreshLocalInfo();
     render();
   }
@@ -305,6 +310,80 @@ export async function startApp(): Promise<void> {
     state.activeCollection = res.data.slug;
     state.expandedCollection = res.data.slug;
     await loadCollections();
+  }
+
+  /** Drop active/expanded pointers that no longer reference a known collection. */
+  function reconcileCollectionSelection(): void {
+    const slugs = new Set(state.collections.map((collection) => collection.slug));
+    if (state.expandedCollection !== null && !slugs.has(state.expandedCollection)) {
+      state.expandedCollection = null;
+    }
+    if (state.activeCollection === null || !slugs.has(state.activeCollection)) {
+      state.activeCollection = state.collections[0]?.slug ?? null;
+    }
+  }
+
+  /**
+   * Delete a board file from GitHub. A board that was never synced has no
+   * remote file, so we only refresh and say so. The local drawing is never
+   * touched: deleting clears the selection at most.
+   */
+  async function deleteBoard(board: BoardView): Promise<void> {
+    if (board.sha === null) {
+      await loadCollections();
+      setNotice("info", `Board «${board.name}» is not on GitHub yet, so there is nothing to delete there.`);
+      return;
+    }
+    const res = await sender<null>({
+      type: "github:deleteBoard",
+      path: board.path,
+      sha: board.sha,
+    });
+    if (!res.ok) {
+      setNotice("error", res.error);
+      return;
+    }
+    if (state.board?.path === board.path) {
+      // Clear the selection only; the local drawing is deliberately untouched.
+      controller.setBoard(null);
+      state.activeCollection = board.collection;
+      state.expandedCollection = board.collection;
+    }
+    await loadCollections();
+    reconcileCollectionSelection();
+    setNotice("info", `Deleted board «${board.name}» from GitHub.`);
+  }
+
+  /**
+   * Delete a collection (cascade). If the open board lived there it is cleared;
+   * the local drawing is never touched.
+   */
+  async function deleteCollection(collection: Collection): Promise<void> {
+    const res = await sender<CollectionDeleteResult>({
+      type: "github:deleteCollection",
+      slug: collection.slug,
+    });
+    if (!res.ok) {
+      setNotice("error", res.error);
+      return;
+    }
+    if (state.board?.collection === collection.slug) {
+      // Clear the selection only; the local drawing is deliberately untouched.
+      controller.setBoard(null);
+    }
+    if (state.expandedCollection === collection.slug) state.expandedCollection = null;
+    await loadCollections();
+    reconcileCollectionSelection();
+
+    const { deletedBoards, failures } = res.data;
+    const boardWord = deletedBoards === 1 ? "board" : "boards";
+    let message = `Deleted collection «${collection.name}» (${deletedBoards} ${boardWord} removed).`;
+    if (failures.length > 0) {
+      message += ` Could not delete ${failures.length} item${failures.length === 1 ? "" : "s"}: ${failures.join("; ")}`;
+      setNotice("error", message);
+      return;
+    }
+    setNotice("info", message);
   }
 
   async function saveSettings(patch: Partial<Settings>, message: string): Promise<void> {
@@ -445,6 +524,8 @@ export async function startApp(): Promise<void> {
       if (slug) state.activeCollection = slug;
       render();
     },
+    onDeleteBoard: (board) => void deleteBoard(board),
+    onDeleteCollection: (collection) => void deleteCollection(collection),
     onCreateCollection: (name) => void createCollection(name),
     onRefreshCollections: () => void loadCollections(),
     onNewBoard: (collectionSlug, name) =>

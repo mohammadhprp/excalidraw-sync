@@ -45,6 +45,13 @@ export interface ConfirmRequest {
   message: string;
   confirmLabel: string;
   confirmDisabled?: boolean;
+  /**
+   * When set, the dialog renders a text field and the confirm button stays
+   * disabled until the typed value matches this phrase. Used for destructive
+   * actions that need a strong confirmation (e.g. deleting a non-empty
+   * collection, where the phrase is the collection name).
+   */
+  confirmPhrase?: string;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -91,6 +98,8 @@ export interface PanelActions {
   onReloadFromRemote(): void;
   onSelectBoard(board: BoardView): void;
   onExpandCollection(slug: string | null): void;
+  onDeleteBoard(board: BoardView): void;
+  onDeleteCollection(collection: Collection): void;
   onCreateCollection(name: string): void;
   onRefreshCollections(): void;
   onNewBoard(collectionSlug: string, name: string): void;
@@ -129,6 +138,30 @@ interface PrimaryControl {
 
 function toneClass(base: string, tone: string): string {
   return `${base} tone-${tone}`;
+}
+
+/**
+ * A compact trash glyph for destructive controls. Inline SVG (no dependency)
+ * so the destructive affordance reads visually without a text label competing
+ * with the row's primary action; the button always carries an `aria-label`.
+ */
+function trashIcon(): SVGElement {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("width", "12");
+  svg.setAttribute("height", "12");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  const path = document.createElementNS(ns, "path");
+  path.setAttribute("d", "M3.5 4.5h9M6.5 4.5V3h3v1.5M5 4.5l.5 8.5h5L11 4.5M6.8 6.8v4M9.2 6.8v4");
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", "currentColor");
+  path.setAttribute("stroke-width", "1.2");
+  path.setAttribute("stroke-linecap", "round");
+  path.setAttribute("stroke-linejoin", "round");
+  svg.append(path);
+  return svg;
 }
 
 export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
@@ -307,12 +340,8 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
     ),
   );
 
-  // One collection selector drives both the board list below and the target of
-  // the New board form, so the form is self-explanatory.
-  const boardCollectionSelect = h("select", {
-    attrs: { "aria-label": "Collection" },
-    on: { change: () => actions.onExpandCollection(boardCollectionSelect.value) },
-  });
+  // The New board form targets the active collection; its heading names that
+  // collection so the target is explicit.
   const newBoardName = h("input", {
     class: "ex-input",
     type: "text",
@@ -325,7 +354,7 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
     on: {
       click: () => {
         const name = newBoardName.value.trim();
-        const slug = boardCollectionSelect.value;
+        const slug = activeCollection(state)?.slug;
         if (name && slug) actions.onNewBoard(slug, name);
       },
     },
@@ -399,10 +428,9 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
     h(
       "div",
       { class: "ex-section-head" },
-      h("h3", { class: "ex-section-title", text: "Boards" }),
+      h("h3", { class: "ex-section-title", text: "Collections" }),
       refreshBtn,
     ),
-    field("Collection", boardCollectionSelect),
     collectionsList,
   );
 
@@ -555,15 +583,6 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
   });
   const authorNameInput = h("input", { class: "ex-input", type: "text", attrs: { "aria-label": "Commit author name" } });
   const authorEmailInput = h("input", { class: "ex-input", type: "text", attrs: { "aria-label": "Commit author email" } });
-  const settingsSmartSync = h("input", {
-    type: "checkbox",
-    attrs: { "aria-label": "Smart sync default" },
-  });
-  const settingsSmartSyncDelay = h("input", {
-    class: "ex-input",
-    type: "number",
-    attrs: { min: "0", step: "250", "aria-label": "Smart sync default delay (ms)" },
-  });
 
   const testResult = h("div", { class: "ex-meta" });
   const testBtn = h("button", {
@@ -596,10 +615,6 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
     field("Commit message template", templateInput),
     h("div", { class: "ex-grid" }, field("Author name", authorNameInput), field("Author email", authorEmailInput)),
     h("div", { class: "ex-divider" }),
-    h("h3", { class: "ex-section-title", text: "Smart sync default" }),
-    h("label", { class: "ex-check" }, settingsSmartSync, h("span", { text: "Enabled" })),
-    field("Debounce delay (ms)", settingsSmartSyncDelay),
-    h("div", { class: "ex-divider" }),
     h("div", { class: "ex-btn-row" }, testBtn),
     testResult,
     h("div", { class: "ex-divider" }),
@@ -614,6 +629,18 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
 
   /* Confirm modal -------------------------------------------------------- */
   const confirmText = h("p");
+  const confirmPhraseInput = h("input", {
+    class: "ex-input",
+    type: "text",
+    id: "ex-confirm-phrase",
+    attrs: { "aria-label": "Type the name to confirm" },
+  });
+  const confirmPhraseField = h(
+    "div",
+    { class: "ex-field", hidden: true },
+    h("label", { text: "Type the name to confirm", for: "ex-confirm-phrase" }),
+    confirmPhraseInput,
+  );
   const confirmYes = h("button", {
     class: "ex-primary",
     attrs: { type: "button" },
@@ -627,7 +654,13 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
   const confirmOverlay = h(
     "div",
     { class: "ex-confirm-overlay", hidden: true },
-    h("div", { class: "ex-confirm" }, confirmText, h("div", { class: "ex-btn-row" }, confirmYes, confirmNo)),
+    h(
+      "div",
+      { class: "ex-confirm" },
+      confirmText,
+      confirmPhraseField,
+      h("div", { class: "ex-btn-row" }, confirmYes, confirmNo),
+    ),
   );
 
   const panel = h(
@@ -837,8 +870,11 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
       commitMessageTemplate: templateInput.value,
       authorName: authorNameInput.value,
       authorEmail: authorEmailInput.value,
-      smartSync: settingsSmartSync.checked,
-      smartSyncDelayMs: Number(settingsSmartSyncDelay.value) || 0,
+      // Smart sync is owned by the Sync tab, which writes it immediately; the
+      // Settings form only carries the current values through so the patch stays
+      // complete. `state` is always set before a Save click can fire.
+      smartSync: state.smartSync,
+      smartSyncDelayMs: state.smartSyncDelayMs,
     };
   }
 
@@ -910,12 +946,19 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
    * becomes the prominent empty state and the unusable board card stays hidden.
    */
   function renderOnboarding(s: PanelState): void {
+    // Total boards across every collection: the board steps track the repo's
+    // content, not the locally selected board, so an already-populated repo is
+    // complete for them even with nothing open.
+    const boardCount = s.collections.reduce(
+      (total, collection) => total + collection.boards.length,
+      0,
+    );
     const steps = onboardingSteps({
       hasToken: s.hasToken,
       owner: s.settings?.owner ?? "",
       repo: s.settings?.repo ?? "",
       collectionCount: s.collections.length,
-      hasBoard: s.board !== null,
+      boardCount,
       boardSaved: s.boardSaved,
     });
     const complete = onboardingComplete(steps);
@@ -925,7 +968,6 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
 
     const hasCollections = s.collections.length > 0;
     const loading = s.loadingCollections;
-    const activeBoardCount = activeCollection(s)?.boards.length ?? 0;
 
     // The board list needs a collection; while the first load runs keep it
     // visible so its "Loading…" line shows instead of flashing the empty state.
@@ -939,13 +981,20 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
       : "New collection";
     newCollectionHint.hidden = !collectionEmpty;
 
+    // Only a repo with no boards anywhere gets the guided "first board" state;
+    // a repo that already has boards must never show it.
     const boardEmpty =
-      s.configured && !loading && hasCollections && s.board === null && activeBoardCount === 0;
+      s.configured && !loading && hasCollections && s.board === null && boardCount === 0;
     // A new board needs a collection to live in; hide the form until one exists
     // (including while the first list is still loading).
     newBoardSection.hidden = !s.configured || !hasCollections;
     newBoardSection.classList.toggle("ex-empty-state", boardEmpty);
-    newBoardTitle.textContent = boardEmpty ? "Create your first board" : "New board";
+    const target = activeCollection(s)?.name ?? "";
+    newBoardTitle.textContent = boardEmpty
+      ? `Create your first board in «${target}»`
+      : target
+        ? `New board in «${target}»`
+        : "New board";
     newBoardHint.hidden = !boardEmpty;
 
     clear(onboardingChecklist);
@@ -978,6 +1027,12 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
     }
   }
 
+  /**
+   * Render the inline collection/board navigator. Each collection row is toggled
+   * by its own control (chevron + name, `aria-expanded`), and an expanded
+   * collection shows its boards indented beneath it. The New board form targets
+   * the active collection, so the navigator is the single source of that choice.
+   */
   function renderCollections(state: PanelState): void {
     clear(collectionsList);
 
@@ -994,52 +1049,178 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
       return;
     }
 
-    // The board list mirrors the collection selected above; boards are shown
-    // flat (never nested under a "Collections" heading).
-    const active =
-      state.collections.find((collection) => collection.slug === state.activeCollection) ??
-      state.collections[0];
-    if (!active) return;
+    state.collections.forEach((collection, index) => {
+      const expanded = state.expandedCollection === collection.slug;
+      const boardsId = `ex-collection-boards-${index}`;
+      const count = collection.boards.length;
+      const countLabel = `${count} ${count === 1 ? "board" : "boards"}`;
 
-    if (active.boards.length === 0) {
-      collectionsList.append(h("div", { class: "ex-muted", text: "No boards in this collection." }));
-      return;
-    }
+      const toggle = h(
+        "button",
+        {
+          class: "ex-collection-toggle",
+          attrs: {
+            type: "button",
+            "aria-expanded": String(expanded),
+            "aria-controls": boardsId,
+          },
+          on: {
+            click: () => actions.onExpandCollection(expanded ? null : collection.slug),
+          },
+        },
+        h("span", {
+          class: "ex-chevron",
+          attrs: { "aria-hidden": "true" },
+          text: expanded ? "\u25be" : "\u25b8",
+        }),
+        h("span", { class: "ex-collection-name ex-truncate", text: collection.name }),
+      );
 
-    for (const board of active.boards) {
+      const deleteCollectionBtn = h(
+        "button",
+        {
+          class: "ex-del",
+          attrs: {
+            type: "button",
+            "aria-label": `Delete collection «${collection.name}»`,
+            title: "Delete collection",
+          },
+          on: { click: () => confirmDeleteCollection(collection) },
+        },
+        trashIcon(),
+      );
+
       collectionsList.append(
         h(
           "div",
-          { class: "ex-board-row" },
-          h("span", { class: "ex-muted ex-truncate ex-grow", text: board.name }),
-          h("button", {
-            class: "ex-btn",
-            attrs: { type: "button", "aria-label": `Switch to ${board.name}` },
-            on: {
-              click: () =>
-                actions.onSelectBoard({
-                  collection: board.collection,
-                  name: board.name,
-                  path: board.path,
-                  sha: board.sha,
-                }),
-            },
-          }, "Switch"),
+          { class: "ex-collection-row" },
+          toggle,
+          h("span", { class: "ex-collection-count", text: countLabel }),
+          deleteCollectionBtn,
         ),
       );
-    }
+
+      const boardsWrap = h("div", {
+        class: "ex-collection-boards",
+        id: boardsId,
+        hidden: !expanded,
+      });
+      if (expanded) {
+        if (count === 0) {
+          boardsWrap.append(
+            h("div", { class: "ex-muted", text: "No boards in this collection." }),
+          );
+        } else {
+          for (const board of collection.boards) {
+            const isOpen = state.board?.path === board.path;
+            const view: BoardView = {
+              collection: board.collection,
+              name: board.name,
+              path: board.path,
+              sha: board.sha,
+            };
+            boardsWrap.append(
+              h(
+                "div",
+                { class: `ex-board-row ex-board-nested${isOpen ? " ex-board-active" : ""}` },
+                h(
+                  "button",
+                  {
+                    class: "ex-board-open ex-truncate ex-grow",
+                    attrs: {
+                      type: "button",
+                      "aria-label": `Open board ${board.name}`,
+                      ...(isOpen ? { "aria-current": "true" } : {}),
+                    },
+                    on: { click: () => actions.onSelectBoard(view) },
+                  },
+                  board.name,
+                ),
+                h(
+                  "button",
+                  {
+                    class: "ex-del",
+                    attrs: {
+                      type: "button",
+                      "aria-label": `Delete board «${board.name}»`,
+                      title: "Delete board",
+                    },
+                    on: { click: () => confirmDeleteBoard(view) },
+                  },
+                  trashIcon(),
+                ),
+              ),
+            );
+          }
+        }
+      }
+      collectionsList.append(boardsWrap);
+    });
   }
 
-  function updateBoardCollectionSelect(state: PanelState): void {
-    clear(boardCollectionSelect);
-    for (const collection of state.collections) {
-      boardCollectionSelect.append(h("option", { attrs: { value: collection.slug } }, collection.name));
-    }
-    const active = state.activeCollection ?? state.collections[0]?.slug ?? "";
-    if (active) boardCollectionSelect.value = active;
+  /**
+   * Show a confirm dialog. The panel owns the request (so it can render the
+   * optional phrase field and gate the confirm button on the typed value); the
+   * confirmed action is delegated back through `PanelActions`.
+   */
+  function requestConfirm(request: ConfirmRequest): void {
+    state.confirm = request;
+    render(state);
   }
+
+  function confirmDeleteBoard(board: BoardView): void {
+    requestConfirm({
+      message: `Delete board «${board.name}»? This removes the file from GitHub and cannot be undone. Your local drawing is not affected.`,
+      confirmLabel: "Delete board",
+      onConfirm: () => {
+        state.confirm = null;
+        render(state);
+        actions.onDeleteBoard(board);
+      },
+      onCancel: () => {
+        state.confirm = null;
+        render(state);
+      },
+    });
+  }
+
+  function confirmDeleteCollection(collection: Collection): void {
+    const count = collection.boards.length;
+    const requiresPhrase = count > 0;
+    const countText = `${count} ${count === 1 ? "board" : "boards"}`;
+    requestConfirm({
+      message: requiresPhrase
+        ? `Delete collection «${collection.name}» and its ${countText}? This removes them from GitHub and cannot be undone. Your local drawing is not affected. Type the collection name to confirm.`
+        : `Delete collection «${collection.name}»? This removes it from GitHub and cannot be undone.`,
+      confirmLabel: "Delete collection",
+      confirmPhrase: requiresPhrase ? collection.name : undefined,
+      onConfirm: () => {
+        state.confirm = null;
+        render(state);
+        actions.onDeleteCollection(collection);
+      },
+      onCancel: () => {
+        state.confirm = null;
+        render(state);
+      },
+    });
+  }
+
+  /** Keep the confirm button disabled until a required phrase matches. */
+  function updateConfirmEnabled(): void {
+    const request = state?.confirm;
+    if (!request) return;
+    const phrase = request.confirmPhrase;
+    const matches =
+      phrase === undefined || confirmPhraseInput.value.trim() === phrase.trim();
+    confirmYes.disabled = (request.confirmDisabled ?? false) || !matches;
+  }
+
+  confirmPhraseInput.addEventListener("input", () => updateConfirmEnabled());
 
   let state: PanelState;
+  /** The confirm currently rendered, to reset the phrase field on a new one. */
+  let shownConfirm: ConfirmRequest | null = null;
 
   function render(next: PanelState): void {
     state = next;
@@ -1141,20 +1322,22 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
     syncField(templateInput, settings?.commitMessageTemplate ?? "");
     syncField(authorNameInput, settings?.author.name ?? "");
     syncField(authorEmailInput, settings?.author.email ?? "");
-    if (root.activeElement !== settingsSmartSync) settingsSmartSync.checked = state.smartSync;
-    if (root.activeElement !== settingsSmartSyncDelay) {
-      settingsSmartSyncDelay.value = String(state.smartSyncDelayMs);
-    }
     testResult.textContent = state.testResult ?? "";
 
     renderCollections(state);
-    updateBoardCollectionSelect(state);
 
+    // Reset the phrase field whenever a new confirm request is shown, so a
+    // previous phrase never leaks into the next dialog.
+    if (state.confirm !== shownConfirm) {
+      shownConfirm = state.confirm;
+      confirmPhraseInput.value = "";
+    }
     confirmOverlay.hidden = state.confirm === null;
     if (state.confirm) {
       confirmText.textContent = state.confirm.message;
       confirmYes.textContent = state.confirm.confirmLabel;
-      confirmYes.disabled = state.confirm.confirmDisabled ?? false;
+      confirmPhraseField.hidden = state.confirm.confirmPhrase === undefined;
+      updateConfirmEnabled();
     }
 
     // Place the badge (clamped) and, if open, the panel adjacent to it.

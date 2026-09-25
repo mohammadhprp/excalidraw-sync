@@ -375,7 +375,8 @@ export const PANEL_CSS = `
 
 /* Inputs ------------------------------------------------------------------ */
 .ex-field { display: flex; flex-direction: column; gap: 4px; }
-.ex-field + .ex-field { margin-top: var(--ex-s2); }
+/* Stacked fields share one vertical rhythm. */
+.ex-root .ex-field + .ex-field { margin-top: var(--ex-s2); }
 .ex-field > label { font-size: 11px; font-weight: 600; color: var(--ex-muted); }
 .ex-input, .ex-root select, .ex-root textarea {
   width: 100%;
@@ -390,11 +391,70 @@ export const PANEL_CSS = `
 .ex-root select { appearance: auto; }
 .ex-root textarea { resize: vertical; min-height: 44px; }
 .ex-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--ex-s2); }
+/* Two-column rows: the grid gap already spaces the columns, so the second
+   field must not also inherit the stacked-field margin, which would push the
+   right column ~8px below the left. Both columns align at the top instead. */
+.ex-root .ex-grid > .ex-field { margin-top: 0; }
+/* Adjacent form blocks (a grid, or a standalone field between two grids) share
+   the same spacing as stacked fields. */
+.ex-root .ex-grid + .ex-grid,
+.ex-root .ex-grid + .ex-field,
+.ex-root .ex-field + .ex-grid { margin-top: var(--ex-s2); }
 .ex-check { display: flex; align-items: center; gap: var(--ex-s2); font-size: 12px; }
 .ex-check input { width: auto; flex: none; }
 
-/* Board list -------------------------------------------------------------- */
+/* Collection / board navigator ------------------------------------------- */
 .ex-list { display: flex; flex-direction: column; gap: var(--ex-s2); margin-top: var(--ex-s2); }
+.ex-collection-row {
+  display: flex;
+  align-items: center;
+  gap: var(--ex-s2);
+  min-height: 36px;
+  padding: 4px 6px 4px 8px;
+  border: 1px solid var(--ex-border);
+  border-radius: var(--ex-radius-sm);
+  background: var(--ex-bg);
+}
+.ex-collection-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ex-s2);
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 2px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ex-text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.ex-collection-toggle:hover { color: var(--ex-accent); }
+.ex-chevron {
+  flex: none;
+  width: 12px;
+  color: var(--ex-muted);
+  font-size: 11px;
+  line-height: 1;
+}
+.ex-collection-name { min-width: 0; }
+.ex-collection-count {
+  flex: none;
+  font-size: 11px;
+  color: var(--ex-muted);
+  white-space: nowrap;
+}
+.ex-collection-boards {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  padding-left: var(--ex-s3);
+  border-left: 2px solid var(--ex-border);
+}
 .ex-board-row {
   display: flex;
   align-items: center;
@@ -404,6 +464,43 @@ export const PANEL_CSS = `
   border: 1px solid var(--ex-border);
   border-radius: var(--ex-radius-sm);
   background: var(--ex-bg);
+}
+.ex-board-nested { min-height: 32px; padding: 4px 6px 4px 8px; }
+.ex-board-active { border-color: var(--ex-accent); background: var(--ex-surface); }
+.ex-board-open {
+  appearance: none;
+  min-width: 0;
+  padding: 2px 4px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ex-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ex-board-open:hover { color: var(--ex-accent); text-decoration: underline; }
+.ex-board-active .ex-board-open { color: var(--ex-accent); font-weight: 600; }
+
+/* Compact destructive control (board + collection delete). */
+.ex-del {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ex-muted);
+  cursor: pointer;
+}
+.ex-del:hover:not(:disabled) {
+  color: var(--ex-red);
+  border-color: var(--ex-red);
+  background: var(--ex-surface);
 }
 
 /* Conflict banner --------------------------------------------------------- */
@@ -463,6 +560,7 @@ export const PANEL_CSS = `
   padding: var(--ex-s3);
 }
 .ex-confirm p { margin: 0 0 var(--ex-s3); font-size: 12px; }
+.ex-confirm .ex-field { margin-bottom: var(--ex-s3); }
 
 /* First-run: Get started card + checklist --------------------------------- */
 /* Single-class selectors keep these below the .ex-root [hidden] rule (0,2,0),
