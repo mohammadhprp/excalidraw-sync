@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import { decodeBase64Utf8, encodeBase64Utf8 } from "../../src/lib/base64";
-import { MAX_CONTENT_BYTES, createGitHubClient, type GitHubConfig } from "../../src/lib/github";
+import {
+  MAX_CONTENT_BYTES,
+  createGitHubClient,
+  listAccessibleRepos,
+  type GitHubConfig,
+} from "../../src/lib/github";
 import type { SceneFile } from "../../src/lib/types";
 
 const config: GitHubConfig = {
@@ -31,6 +36,7 @@ interface RecordedCall {
   url: string;
   body: Record<string, unknown> | null;
   cache: string | null;
+  headers: Record<string, string>;
 }
 
 type Handler = (
@@ -58,7 +64,13 @@ function mockFetch(handler: Handler): {
       typeof init?.body === "string"
         ? (JSON.parse(init.body) as Record<string, unknown>)
         : null;
-    calls.push({ method, url: url.toString(), body, cache: init?.cache ?? null });
+    calls.push({
+      method,
+      url: url.toString(),
+      body,
+      cache: init?.cache ?? null,
+      headers: (init?.headers ?? {}) as Record<string, string>,
+    });
     return Promise.resolve(handler(method, url, body));
   };
   return { fetchImpl: fetchImpl as unknown as typeof fetch, calls };
@@ -548,5 +560,68 @@ describe("testConnection", () => {
       branch: "main",
       private: false,
     });
+  });
+});
+
+describe("listAccessibleRepos", () => {
+  it("maps GET /user/repos into RepoSummary[] with the required headers", async () => {
+    const { fetchImpl, calls } = mockFetch(() =>
+      jsonResponse(200, [
+        {
+          name: "boards",
+          full_name: "acme/boards",
+          private: false,
+          default_branch: "main",
+          owner: { login: "acme" },
+        },
+        {
+          name: "secret",
+          full_name: "acme/secret",
+          private: true,
+          default_branch: "trunk",
+          owner: { login: "acme" },
+        },
+      ]),
+    );
+
+    const repos = await listAccessibleRepos("test-token", { fetch: fetchImpl });
+
+    expect(repos).toEqual([
+      {
+        owner: "acme",
+        name: "boards",
+        fullName: "acme/boards",
+        private: false,
+        defaultBranch: "main",
+      },
+      {
+        owner: "acme",
+        name: "secret",
+        fullName: "acme/secret",
+        private: true,
+        defaultBranch: "trunk",
+      },
+    ]);
+
+    expect(calls).toHaveLength(1);
+    const call = calls[0];
+    expect(call?.method).toBe("GET");
+    expect(call?.url).toBe(
+      "https://api.github.com/user/repos?per_page=100&sort=updated",
+    );
+    expect(call?.cache).toBe("no-store");
+    expect(call?.headers.Authorization).toBe("Bearer test-token");
+    expect(call?.headers.Accept).toBe("application/vnd.github+json");
+    expect(call?.headers["X-GitHub-Api-Version"]).toBe("2022-11-28");
+  });
+
+  it("throws a clear GitHub error on a non-2xx response", async () => {
+    const { fetchImpl } = mockFetch(() =>
+      jsonResponse(401, { message: "Bad credentials" }),
+    );
+
+    await expect(
+      listAccessibleRepos("bad-token", { fetch: fetchImpl }),
+    ).rejects.toThrow("GitHub GET /user/repos failed: 401 Bad credentials");
   });
 });

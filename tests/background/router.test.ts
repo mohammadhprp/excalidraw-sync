@@ -163,3 +163,39 @@ describe("handleMessage: github relay", () => {
     });
   });
 });
+
+describe("handleMessage: github:listRepos", () => {
+  const repos = [
+    {
+      owner: "acme",
+      name: "boards",
+      fullName: "acme/boards",
+      private: false,
+      defaultBranch: "main",
+    },
+  ];
+
+  it("lists repos with only a token (owner/repo may be empty)", async () => {
+    const listRepos = vi.fn(async () => repos);
+    const settings = createMemorySettingsStore({ token: "t" });
+    const res = await handleMessage(
+      { type: "github:listRepos" },
+      { settings, createClient: () => fakeClient(), listRepos },
+    );
+
+    expect(listRepos).toHaveBeenCalledWith("t");
+    expect(res).toEqual({ ok: true, data: repos });
+  });
+
+  it("fails without a token, before calling the lister", async () => {
+    const listRepos = vi.fn(async () => repos);
+    const settings = createMemorySettingsStore({ owner: "acme", repo: "boards" });
+    const res = await handleMessage(
+      { type: "github:listRepos" },
+      { settings, createClient: () => fakeClient(), listRepos },
+    );
+
+    expect(listRepos).not.toHaveBeenCalled();
+    expect(res).toEqual({ ok: false, error: "No GitHub token configured." });
+  });
+});

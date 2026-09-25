@@ -36,6 +36,18 @@ export interface Collection {
   boards: BoardRef[];
 }
 
+/**
+ * A GitHub repository the token can access, as returned by `listAccessibleRepos`
+ * and relayed over `github:listRepos` for the options-page repo picker.
+ */
+export interface RepoSummary {
+  owner: string;
+  name: string;
+  fullName: string;
+  private: boolean;
+  defaultBranch: string;
+}
+
 /** Result of a conflict-aware save. */
 export type SyncOutcome =
   | { status: "created"; sha: string; commit: string }
@@ -71,6 +83,7 @@ export interface Settings {
 export type Req =
   | { type: "settings:get" }
   | { type: "settings:set"; patch: Partial<Settings> }
+  | { type: "github:listRepos" }
   | { type: "ui:openOptions" }
   | { type: "github:testConnection" }
   | { type: "github:listCollections" }

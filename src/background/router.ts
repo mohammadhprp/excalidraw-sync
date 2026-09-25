@@ -3,13 +3,19 @@ import {
   type GitHubClient,
   type GitHubConfig,
 } from "../lib/github";
-import type { Req, Res } from "../lib/types";
+import type { RepoSummary, Req, Res } from "../lib/types";
 import { toPublicSettings, type SettingsStore } from "./settings";
 
 /** Everything the router needs; injected so tests avoid chrome + network. */
 export interface BackgroundDeps {
   settings: SettingsStore;
   createClient: (config: GitHubConfig) => GitHubClient;
+  /**
+   * Lists the repositories a token can access (the options-page repo picker).
+   * Needs only a token, so it is wired separately from `createClient`, which
+   * requires an owner and repo. Optional so tests can omit it.
+   */
+  listRepos?: (token: string) => Promise<RepoSummary[]>;
   /**
    * Opens the extension options page. Content scripts cannot call
    * `chrome.runtime.openOptionsPage` (their `chrome.runtime` surface omits it),
@@ -54,6 +60,19 @@ export async function handleMessage(
       case "ui:openOptions":
         await deps.openOptionsPage?.();
         return { ok: true, data: null };
+
+      case "github:listRepos": {
+        // The picker runs before an owner/repo exists, so this case needs only
+        // a token — it must not go through `client()`.
+        const settings = await deps.settings.get();
+        if (!settings.token) {
+          throw new Error("No GitHub token configured.");
+        }
+        if (!deps.listRepos) {
+          throw new Error("Repository listing is not available.");
+        }
+        return { ok: true, data: await deps.listRepos(settings.token) };
+      }
 
       case "github:testConnection":
         return { ok: true, data: await (await client()).testConnection() };

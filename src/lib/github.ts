@@ -12,6 +12,7 @@ import type {
   AuthorIdentity,
   BoardRef,
   Collection,
+  RepoSummary,
   SceneFile,
   Settings,
   SyncOutcome,
@@ -19,6 +20,28 @@ import type {
 
 const API_ROOT = "https://api.github.com";
 const API_VERSION = "2022-11-28";
+
+/** Read GitHub's JSON `{ message }` error detail, when the body carries one. */
+async function errorDetail(res: Response): Promise<string> {
+  try {
+    const body = (await res.json()) as { message?: unknown };
+    return typeof body.message === "string" ? body.message : "";
+  } catch {
+    return "";
+  }
+}
+
+/** The standard client error: `GitHub <method> <path> failed: <status> [detail]`. */
+async function apiError(
+  method: string,
+  path: string,
+  res: Response,
+): Promise<Error> {
+  const detail = await errorDetail(res);
+  return new Error(
+    `GitHub ${method} ${path} failed: ${res.status}${detail ? ` ${detail}` : ""}`,
+  );
+}
 
 /**
  * The GitHub Contents API rejects files larger than 1 MB. Checked before the
@@ -117,26 +140,6 @@ export function createGitHubClient(
     };
     if (withBody) result["Content-Type"] = "application/json";
     return result;
-  }
-
-  async function errorDetail(res: Response): Promise<string> {
-    try {
-      const body = (await res.json()) as { message?: unknown };
-      return typeof body.message === "string" ? body.message : "";
-    } catch {
-      return "";
-    }
-  }
-
-  async function apiError(
-    method: string,
-    path: string,
-    res: Response,
-  ): Promise<Error> {
-    const detail = await errorDetail(res);
-    return new Error(
-      `GitHub ${method} ${path} failed: ${res.status}${detail ? ` ${detail}` : ""}`,
-    );
   }
 
   /** GET a path; returns a single item, a directory array, or `null` on 404. */
@@ -401,6 +404,56 @@ export function createGitHubClient(
     createCollection,
     testConnection,
   };
+}
+
+/** Shape of one `GET /user/repos` entry (only the fields the picker needs). */
+interface RepoApiItem {
+  name?: string;
+  full_name?: string;
+  private?: boolean;
+  default_branch?: string;
+  owner?: { login?: string };
+}
+
+/**
+ * List the repositories the given token can access, newest-updated first.
+ *
+ * Unlike the per-repo client this needs only a token — the repo picker runs
+ * before an owner/repo is configured. `deps` is injectable so unit tests never
+ * touch the network.
+ */
+export async function listAccessibleRepos(
+  token: string,
+  deps: Partial<GitHubDeps> = {},
+): Promise<RepoSummary[]> {
+  const fetchImpl = deps.fetch ?? globalThis.fetch;
+  if (typeof fetchImpl !== "function") {
+    throw new Error("No fetch implementation available for the GitHub client.");
+  }
+
+  const res = await fetchImpl(
+    `${API_ROOT}/user/repos?per_page=100&sort=updated`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": API_VERSION,
+      },
+      cache: "no-store",
+    },
+  );
+  if (!res.ok) throw await apiError("GET", "/user/repos", res);
+
+  const data: unknown = await res.json();
+  if (!Array.isArray(data)) return [];
+  return (data as RepoApiItem[]).map((item) => ({
+    owner: item.owner?.login ?? "",
+    name: item.name ?? "",
+    fullName: item.full_name ?? "",
+    private: Boolean(item.private),
+    defaultBranch: item.default_branch ?? "",
+  }));
 }
 
 /** Project persisted `Settings` onto the subset the client consumes. */

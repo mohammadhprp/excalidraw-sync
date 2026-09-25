@@ -1,4 +1,4 @@
-import { createGitHubClient } from "../lib/github";
+import { createGitHubClient, listAccessibleRepos } from "../lib/github";
 import type { Req } from "../lib/types";
 import { handleMessage, type BackgroundDeps } from "./router";
 import { createChromeSettingsStore } from "./settings";
@@ -15,6 +15,9 @@ import { createChromeSettingsStore } from "./settings";
 const deps: BackgroundDeps = {
   settings: createChromeSettingsStore(),
   createClient: (config) => createGitHubClient(config),
+  // The repo picker needs only a token, so it is wired straight to the
+  // module-level lister rather than through a per-repo client.
+  listRepos: (token) => listAccessibleRepos(token),
   openOptionsPage: () => chrome.runtime.openOptionsPage(),
 };
 

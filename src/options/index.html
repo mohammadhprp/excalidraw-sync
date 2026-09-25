@@ -3,48 +3,169 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Excalidraw Sync — Token</title>
+    <title>Excalidraw Sync — Setup</title>
     <link rel="stylesheet" href="./options.css" />
   </head>
   <body>
     <main>
-      <h1>Excalidraw Sync</h1>
-      <p class="muted">
-        The GitHub fine-grained PAT is stored only by the extension, in
-        <code>chrome.storage.local</code>. It is never sent to the Excalidraw
-        page and never read back into the sync panel.
-      </p>
-
-      <section>
-        <h2>Repository</h2>
-        <p id="summary" class="summary">Loading…</p>
-      </section>
-
-      <section>
-        <h2>Access token</h2>
-        <p id="token-state" class="state" role="status" aria-live="polite"></p>
-        <label for="token">Fine-grained PAT (Contents: Read and write)</label>
-        <div class="row">
-          <input
-            id="token"
-            type="password"
-            autocomplete="off"
-            spellcheck="false"
-            placeholder="github_pat_…"
-          />
-          <button id="save-token" type="button">Save token</button>
-        </div>
-        <p id="status" class="status" role="status" aria-live="polite"></p>
-      </section>
-
-      <section>
-        <h2>Other settings</h2>
+      <header class="intro">
+        <h1>Set up Excalidraw Sync</h1>
         <p class="muted">
-          Owner, repo, branch, root path, commit template, author and smart sync
-          are edited from the sync panel on
-          <a href="https://excalidraw.com/" target="_blank" rel="noreferrer">excalidraw.com</a>.
+          Connect your GitHub account, choose a repository, and verify the
+          connection. The token is stored by the extension only, in
+          <code>chrome.storage.local</code>, and is never sent to the
+          Excalidraw page or read back into the sync panel.
         </p>
+      </header>
+
+      <nav class="stepper" aria-label="Setup steps">
+        <ol id="stepper"></ol>
+      </nav>
+
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+
+      <!-- Step 1 — Connect -->
+      <section id="panel-connect" class="panel" aria-labelledby="heading-connect">
+        <h2 id="heading-connect">1. Connect</h2>
+        <p class="muted">
+          Paste a GitHub fine-grained personal access token (PAT).
+        </p>
+        <p id="token-state" class="state" role="status" aria-live="polite"></p>
+
+        <label for="token">Fine-grained personal access token</label>
+        <input
+          id="token"
+          type="password"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="github_pat_…"
+        />
+
+        <details class="help">
+          <summary>How do I create a token?</summary>
+          <ol>
+            <li>
+              Open GitHub &rarr; <strong>Settings</strong> &rarr;
+              <strong>Developer settings</strong> &rarr;
+              <strong>Personal access tokens</strong> &rarr;
+              <strong>Fine-grained tokens</strong>.
+            </li>
+            <li>
+              Under <strong>Repository access</strong>, choose
+              <strong>Only select repositories</strong> and pick the repository
+              you want to sync (or all repositories).
+            </li>
+            <li>
+              Under <strong>Permissions</strong> &rarr;
+              <strong>Repository permissions</strong>, set
+              <strong>Contents: Read and write</strong>.
+            </li>
+            <li>
+              Set an <strong>expiration</strong>, generate the token, then copy
+              it here.
+            </li>
+          </ol>
+          <p class="muted">
+            <a
+              href="https://github.com/settings/personal-access-tokens/new"
+              target="_blank"
+              rel="noreferrer"
+              >Create a fine-grained token on GitHub</a
+            >
+          </p>
+        </details>
       </section>
+
+      <!-- Step 2 — Repository -->
+      <section
+        id="panel-repository"
+        class="panel"
+        aria-labelledby="heading-repository"
+        hidden
+      >
+        <h2 id="heading-repository">2. Repository</h2>
+        <p class="muted">
+          Pick a repository the token can access, or enter owner and name by
+          hand, then confirm the sync details.
+        </p>
+
+        <label for="repo-search">Search repositories</label>
+        <input
+          id="repo-search"
+          type="search"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="Filter by owner or name…"
+        />
+
+        <label for="repo-select">Repository</label>
+        <select id="repo-select" size="6" aria-describedby="repo-note"></select>
+        <p id="repo-note" class="note muted"></p>
+
+        <div class="grid">
+          <div>
+            <label for="owner">Owner</label>
+            <input id="owner" type="text" autocomplete="off" spellcheck="false" />
+          </div>
+          <div>
+            <label for="repo">Repository name</label>
+            <input id="repo" type="text" autocomplete="off" spellcheck="false" />
+          </div>
+          <div>
+            <label for="branch">Branch</label>
+            <input id="branch" type="text" autocomplete="off" spellcheck="false" />
+          </div>
+          <div>
+            <label for="root-path">Root path</label>
+            <input
+              id="root-path"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="excalidraw/"
+            />
+          </div>
+          <div>
+            <label for="author-name">Author name</label>
+            <input id="author-name" type="text" autocomplete="off" spellcheck="false" />
+          </div>
+          <div>
+            <label for="author-email">Author email</label>
+            <input id="author-email" type="email" autocomplete="off" spellcheck="false" />
+          </div>
+        </div>
+      </section>
+
+      <!-- Step 3 — Verify -->
+      <section
+        id="panel-verify"
+        class="panel"
+        aria-labelledby="heading-verify"
+        hidden
+      >
+        <h2 id="heading-verify">3. Verify</h2>
+        <p class="muted">
+          Test the connection to confirm the token can reach the repository.
+        </p>
+        <p id="verify-summary" class="summary">(repository not set) @ main</p>
+
+        <div id="done" class="done" hidden>
+          <p class="done-title">You’re connected.</p>
+          <p id="done-summary" class="summary"></p>
+          <a
+            class="button-link"
+            href="https://excalidraw.com/"
+            target="_blank"
+            rel="noreferrer"
+            >Open Excalidraw</a
+          >
+        </div>
+      </section>
+
+      <div class="wizard-nav">
+        <button id="back" type="button" class="secondary">Back</button>
+        <button id="next" type="button">Save token</button>
+      </div>
     </main>
     <script type="module" src="./options.ts"></script>
   </body>
