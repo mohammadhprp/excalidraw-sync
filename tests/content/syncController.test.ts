@@ -157,6 +157,51 @@ describe("syncController.save", () => {
       message: "No board selected.",
     });
   });
+
+  it("a freshly created board saves the empty scene to its own path", async () => {
+    // The create flow clears the live canvas to an empty drawing and points the
+    // controller at the new board. Its first save must target the new path with
+    // that empty scene — never the drawing that was previously on screen.
+    const empty: SceneFile = {
+      type: "excalidraw",
+      version: 2,
+      source: "https://excalidraw.com",
+      elements: [],
+      appState: {},
+      files: {},
+    };
+    const fresh = {
+      collection: "design",
+      name: "fresh",
+      path: "excalidraw/design/fresh.excalidraw",
+      sha: null as string | null,
+    };
+    const send = vi.fn(async (req: Req) =>
+      req.type === "github:saveBoard"
+        ? { ok: true, data: { status: "created", sha: "new-sha", commit: "c" } }
+        : unexpected(),
+    );
+    const controller = createSyncController({
+      send: send as unknown as SyncControllerDeps["send"],
+      readScene: async () => empty,
+      applyScene: async () => {},
+      onChange: () => {},
+      now: () => 1000,
+    });
+
+    controller.setBoard(fresh);
+    controller.markDirty();
+    await controller.save();
+
+    expect(send).toHaveBeenCalledWith({
+      type: "github:saveBoard",
+      path: fresh.path,
+      scene: empty,
+      baseSha: null,
+    });
+    expect(controller.state().board).toEqual({ ...fresh, sha: "new-sha" });
+    expect(controller.state().dirty).toBe(false);
+  });
 });
 
 describe("syncController conflict resolution", () => {
@@ -210,6 +255,48 @@ describe("syncController conflict resolution", () => {
     expect(controller.state().status).toEqual({ kind: "synced", at: 1000 });
     expect(controller.state().board?.sha).toBe("remote");
     expect(controller.state().dirty).toBe(false);
+  });
+
+  it("keepRemote surfaces a failed apply without adopting the sha", async () => {
+    const remoteScene: SceneFile = { ...scene, elements: [{ id: "remote" }] };
+    const { controller, applyScene } = make(async (req) => {
+      if (req.type === "github:saveBoard") {
+        return { ok: true, data: { status: "conflict", remoteSha: "remote", baseSha: null } };
+      }
+      if (req.type === "github:readBoard") {
+        return { ok: true, data: remoteScene };
+      }
+      return unexpected();
+    });
+    applyScene.mockRejectedValueOnce(new Error("canvas write failed"));
+
+    controller.setBoard(board);
+    await controller.save();
+    await controller.keepRemote();
+
+    expect(controller.state().status).toEqual({
+      kind: "error",
+      message: "canvas write failed",
+    });
+    expect(controller.state().board?.sha).toBeNull();
+  });
+
+  it("reloadFromRemote surfaces a failed apply and keeps the base sha", async () => {
+    const remoteScene: SceneFile = { ...scene, elements: [{ id: "remote" }] };
+    const { controller, applyScene } = make(async (req) => {
+      if (req.type === "github:readBoard") return { ok: true, data: remoteScene };
+      return unexpected();
+    });
+    applyScene.mockRejectedValueOnce(new Error("canvas write failed"));
+
+    controller.setBoard({ ...board, sha: "stale-sha" });
+    await controller.reloadFromRemote();
+
+    expect(controller.state().status).toEqual({
+      kind: "error",
+      message: "canvas write failed",
+    });
+    expect(controller.state().board?.sha).toBe("stale-sha");
   });
 
   it("reloadFromRemote refreshes board.sha from the collection listing", async () => {
@@ -269,5 +356,68 @@ describe("syncController conflict resolution", () => {
     await controller.keepLocal();
     await controller.keepRemote();
     expect(send.mock.calls.length).toBe(callsAfterSave);
+  });
+});
+
+describe("syncController.snapshot/restore", () => {
+  it("restores a dirty conflict exactly after an intervening setBoard", async () => {
+    // A failed create/switch rolls back with `restore`. The flow calls
+    // `setBoard(target)` first, which clears dirty/status, so the snapshot must
+    // carry the previous board's dirty flag and status *across* that reset —
+    // otherwise the rollback silently marks the unsaved work saved (F3).
+    const { controller } = make(async (req) =>
+      req.type === "github:saveBoard"
+        ? { ok: true, data: { status: "conflict", remoteSha: "remote", baseSha: null } }
+        : unexpected(),
+    );
+
+    controller.setBoard(board);
+    controller.markDirty();
+    await controller.save();
+    const snapshot = controller.snapshot();
+    expect(snapshot.dirty).toBe(true);
+
+    // Pointing at the target for a write clears dirty/status.
+    controller.setBoard({
+      ...board,
+      name: "other",
+      path: "excalidraw/design/other.excalidraw",
+    });
+    expect(controller.state().dirty).toBe(false);
+    expect(controller.state().status).toEqual({ kind: "idle" });
+
+    controller.restore(snapshot);
+
+    expect(controller.state().board).toEqual(board);
+    expect(controller.state().dirty).toBe(true);
+    expect(controller.state().status).toEqual({
+      kind: "conflict",
+      remoteSha: "remote",
+      baseSha: null,
+    });
+  });
+
+  it("keeps a synced status when rolling a failed switch back", async () => {
+    const { controller } = make(async (req) =>
+      req.type === "github:saveBoard"
+        ? { ok: true, data: { status: "created", sha: "s1", commit: "c" } }
+        : unexpected(),
+    );
+
+    controller.setBoard(board);
+    await controller.save();
+    const snapshot = controller.snapshot();
+    expect(controller.state().status).toEqual({ kind: "synced", at: 1000 });
+
+    controller.setBoard({
+      ...board,
+      name: "other",
+      path: "excalidraw/design/other.excalidraw",
+    });
+    controller.restore(snapshot);
+
+    expect(controller.state().board).toEqual({ ...board, sha: "s1" });
+    expect(controller.state().status).toEqual({ kind: "synced", at: 1000 });
+    expect(controller.state().dirty).toBe(false);
   });
 });

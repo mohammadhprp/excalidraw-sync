@@ -92,3 +92,42 @@ describe("runWriteStrategies fallback order", () => {
     expect(result).toEqual({ strategy: null, ok: false, error: "reload failed" });
   });
 });
+
+describe("runWriteStrategies allow option", () => {
+  it("skips strategies the predicate rejects", async () => {
+    const target = fakeTarget();
+    const result = await runWriteStrategies(target, scene, {
+      allow: (strategy) => strategy === "reload",
+    });
+
+    expect(result).toEqual({ strategy: "reload", ok: true });
+    expect(target.drop).not.toHaveBeenCalled();
+    expect(target.paste).not.toHaveBeenCalled();
+    expect(target.reload).toHaveBeenCalledWith(scene);
+  });
+
+  it("reports the last allowed strategy's error when none can run", async () => {
+    const target = fakeTarget({
+      drop: vi.fn(async () => {
+        throw new Error("drop failed");
+      }),
+    });
+    const result = await runWriteStrategies(target, scene, {
+      allow: (strategy) => strategy === "drop",
+    });
+
+    expect(result).toEqual({ strategy: null, ok: false, error: "drop failed" });
+    expect(target.paste).not.toHaveBeenCalled();
+    expect(target.reload).not.toHaveBeenCalled();
+  });
+
+  it("allows every strategy by default (unchanged fallback order)", async () => {
+    const target = fakeTarget({
+      drop: vi.fn(async () => {
+        throw new Error("drop failed");
+      }),
+    });
+    const result = await runWriteStrategies(target, scene);
+    expect(result).toEqual({ strategy: "paste", ok: true });
+  });
+});
