@@ -94,7 +94,14 @@ a board is active.
 row with a chevron toggle (a `button` carrying `aria-expanded` / `aria-controls`)
 that expands its boards indented beneath it and a board count. The open board is
 highlighted (`aria-current="true"`) and clicked to open it (behind the
-unsaved-changes guard); the New board form targets the active collection, whose
+unsaved-changes guard); opening a board loads that board's drawing and points the
+controller at it *around* the canvas write, so an in-flight smart-sync tick can
+never attribute the incoming scene to the previous board. **Creating a board
+always opens a genuinely empty canvas** — never a copy of what is on screen — and
+when there is unsaved work (an open board with edits, or a drawing not saved to
+any board) the create confirms first, offering to save or discard explicitly
+rather than silently discarding. The New board form targets the active
+collection, whose
 display name its heading carries ("New board in «collection»" / "Create your
 first board in «collection»"), so the navigator is the single source of that
 choice. Every board and collection row has a compact trash control (an inline
@@ -265,6 +272,13 @@ Implemented:
   `aria-controls`, a board count per collection, the open board highlighted
   (`aria-current`), click-to-open behind the unsaved-changes guard, and a
   compact trash control on every board and collection row.
+- Board create/switch canvas flow (`content/boardFlow.ts`): creating a board
+  opens an empty canvas and prompts first when unsaved work would be lost;
+  switching applies the selected board's scene with the controller pointed at
+  the target around the write, and a switch never routes through the
+  `reload` fallback (which navigates and would drop the in-memory selection). A
+  failed write restores the previous selection, preserving its dirty flag and
+  status.
 - Board and collection deletion: board delete removes one file; collection
   delete cascades every board then the `.collection.json` marker, is
   irreversible, and gates a non-empty collection behind a typed-name confirm.
@@ -278,6 +292,9 @@ Not yet exercised end-to-end:
 - A real GitHub round-trip (no token was used in development). Collections and
   board switching are implemented and unit-tested at the state-machine level but
   the live `api.github.com` path is unverified here.
+- The create-fresh and switch canvas flows: the pure decisions and write routing
+  are unit-tested, but the live Excalidraw `drop` landing (whether the canvas
+  actually empties on create / replaces on switch) has no browser harness here.
 - The `paste` and `reload` write fallbacks (only `drop` was exercised live; the
   fallback order is unit-tested).
 - IndexedDB image round-trip from a real image drawn in the UI (the reader was
