@@ -139,6 +139,24 @@ describe("syncController.save", () => {
       message: "No board selected.",
     });
   });
+
+  it("a local change with no board selected does not leave the document dirty", async () => {
+    // Smart sync calls `markDirty()` on every local scene change. With no board
+    // selected there is nothing to save, so the document must not become dirty:
+    // `save()` can only set an error without a board and could never clear it,
+    // stranding the unsaved-changes guard. See AGENTS/CONTEXT and the defect.
+    const { controller } = make(unexpected);
+
+    controller.markDirty();
+    await controller.save();
+
+    expect(controller.state().board).toBeNull();
+    expect(controller.state().dirty).toBe(false);
+    expect(controller.state().status).toEqual({
+      kind: "error",
+      message: "No board selected.",
+    });
+  });
 });
 
 describe("syncController conflict resolution", () => {
