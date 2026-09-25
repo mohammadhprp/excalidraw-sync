@@ -80,11 +80,29 @@ explains creating a fine-grained PAT, scoping it to one repository, granting
 Contents: Read and write, and setting an expiration. The **Boards tab** opens
 with a first-run **Get started** card: a checklist (**Connect GitHub → Create a
 collection → Create a board → Save it**, from the pure `ui/onboarding.ts`) that
-hides once every step is done. While a step is next, its form becomes the
+hides once every step is done. The board steps track the repository's content,
+not the local selection: **Create a board** and **Save it** read done as soon as
+**any** board exists anywhere in the repo, so an already-populated repo skips
+them even with nothing open. While a step is next, its form becomes the
 prominent empty state — with no collections the **New collection** section is
-promoted to "Create your first collection", and with no active board the **New
-board** section reads "Create your first board" — and the current-board card
-(and its Save) stays hidden until a board is active. The palette follows
+promoted to "Create your first collection", and when the repo holds no boards
+and none is selected the **New board** section reads "Create your first board
+in «collection»" — and the current-board card (and its Save) stays hidden until
+a board is active.
+
+**Inline collection/board navigator.** The Boards tab lists collections, each a
+row with a chevron toggle (a `button` carrying `aria-expanded` / `aria-controls`)
+that expands its boards indented beneath it and a board count. The open board is
+highlighted (`aria-current="true"`) and clicked to open it (behind the
+unsaved-changes guard); the New board form targets the active collection, whose
+display name its heading carries ("New board in «collection»" / "Create your
+first board in «collection»"), so the navigator is the single source of that
+choice. Every board and collection row has a compact trash control (an inline
+SVG with an `aria-label`): a board delete removes only that one file; a
+collection delete cascades (see the Contents API contract below). A non-empty
+collection's delete confirm renders a text field and keeps its confirm button
+disabled until the typed value matches the collection's display name; an empty
+collection confirms without the phrase. The palette follows
 `localStorage["excalidraw-theme"]` (light/dark): resolved synchronously before
 the first paint (no light flash when loading into dark) and polled + observed so
 a runtime theme toggle updates the panel live.
@@ -138,14 +156,23 @@ test file lives under `src/`.
 ## The frozen interface (`src/lib/types.ts`)
 
 - `SceneFile`, `BoardRef`, `Collection`, `RepoSummary`, `SyncOutcome`,
-  `AuthorIdentity`, `Settings`, `PublicSettings`.
+  `CollectionDeleteResult`, `AuthorIdentity`, `Settings`, `PublicSettings`.
 - Functions (exported from `src/lib/index.ts`): `readBoard`, `saveBoard`,
   `listCollections`, `listBoards`, `createCollection`, `renderCommitMessage`,
   plus `listAccessibleRepos` (the token-only repo lister for the options
   picker).
 - Message protocol types: `Req`, `Res<T>`. Besides the collection/board calls,
   `Req` carries `github:listRepos`, the token-only message that returns
-  `RepoSummary[]` for the options-page repo picker.
+  `RepoSummary[]` for the options-page repo picker, and the delete messages
+  `github:deleteBoard` (`{ path, sha }` → `null`) and `github:deleteCollection`
+  (`{ slug }` → `CollectionDeleteResult`). The `GitHubClient` interface carries
+  the corresponding `deleteBoard(path, sha)` and `deleteCollection(slug)`
+  methods; like the rest of `src/lib`, they are reached through the worker, not
+  as top-level configured functions.
+
+`CollectionDeleteResult` is `{ deletedBoards: number; failures: string[] }` —
+the number of board files removed and one `"<path>: <error>"` entry per board
+(or marker) that could not be deleted.
 
 `src/lib/config.ts` holds the module-level configured client that the frozen
 top-level functions delegate to (`configureSync` / `configureFromSettings`).
@@ -157,6 +184,21 @@ top-level functions delegate to (`configureSync` / `configureFromSettings`).
 - `PUT /repos/{owner}/{repo}/contents/{path}` body:
   `{ message, content(base64), sha?, branch, author{name,email}, committer{name,email} }`
   → `201` created / `200` updated / `409` conflict / `422` validation.
+- `DELETE /repos/{owner}/{repo}/contents/{path}` body:
+  `{ message, sha, branch, author{name,email}, committer{name,email} }` — the
+  `sha` is the blob sha of the file being removed. `200`/`204` resolve; `404`
+  is treated as already-gone and also resolves (the caller's intent — the file
+  is not in the repo — is satisfied); any other status throws the standard
+  client error.
+- **Collection delete is cascade-then-marker.** `deleteBoard` deletes one board
+  file by path + blob sha. `deleteCollection` lists the collection's boards,
+  deletes each board first, and only when **every** board succeeded reads and
+  deletes the `.collection.json` marker. If any board delete fails, the marker
+  is **left in place** and each failure is reported as `"<path>: <error>"` in
+  `CollectionDeleteResult.failures`, so a partial delete keeps the collection's
+  display name instead of orphaning the surviving boards under a slug-only
+  directory. A collection with no marker is fine: the boards are gone and the
+  name was implicit.
 - `author` and `committer` require **both** name and email.
 - **Conflict detection:** `GET` first and compare the remote `sha` to the
   caller's `baseSha`. Equal (or `404` with `baseSha === null`) → `PUT`; differ →
@@ -219,6 +261,17 @@ Implemented:
 - Smart-sync debounce + conflict state machine, and manual sync outcomes
   (created / updated / unchanged / conflict / error).
 - Collections create+switch and boards list+switch through the frozen protocol.
+- Inline collection/board navigator: expand/collapse with `aria-expanded` /
+  `aria-controls`, a board count per collection, the open board highlighted
+  (`aria-current`), click-to-open behind the unsaved-changes guard, and a
+  compact trash control on every board and collection row.
+- Board and collection deletion: board delete removes one file; collection
+  delete cascades every board then the `.collection.json` marker, is
+  irreversible, and gates a non-empty collection behind a typed-name confirm.
+  A partial board failure keeps the marker and reports the failures.
+- Onboarding skips steps the repository already satisfies: **Create a board**
+  and **Save it** read done once any board exists anywhere in the repo, so an
+  already-populated repo skips them with nothing locally selected.
 
 Not yet exercised end-to-end:
 

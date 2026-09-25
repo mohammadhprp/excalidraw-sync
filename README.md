@@ -17,6 +17,9 @@ onboarding wizard, and the panel walks you through your first board.
 To update later, replace the folder's contents and click **Reload** on the
 extension card.
 
+**Don't delete or move the unzipped folder.** Chrome loads the extension
+directly from it, so removing the folder removes the extension.
+
 ## Configure
 
 Setup is a guided three-step wizard on the extension's **options page**,
@@ -43,14 +46,6 @@ the **Author name** / **Author email** used for each commit.
 **3. Verify.** Click **Test connection**. On success the wizard adopts the
 repository's default branch (a branch you typed yourself is kept) and shows the
 `owner/repo @ branch` target plus a link to open Excalidraw.
-
-**First run in the panel.** On <https://excalidraw.com>, open the Excalidraw
-Sync panel. Its **Boards** tab shows a **Get started** checklist — **Connect
-GitHub → Create a collection → Create a board → Save it** — with a **Set up
-GitHub** button that opens the options wizard and clear empty states that promote
-the next action ("Create your first collection", then "Create your first
-board"). The checklist and card disappear once every step is done. All other
-configuration stays editable in the panel's **Settings** tab.
 
 ## Where to get builds
 
