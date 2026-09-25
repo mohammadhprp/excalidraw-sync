@@ -16,3 +16,6 @@ coverage/
 *.log
 .idea/
 .vscode/
+
+# Team Mate overlay scaffolding (local)
+.opencode/
