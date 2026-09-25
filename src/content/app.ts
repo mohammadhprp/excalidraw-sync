@@ -31,6 +31,7 @@ import { computeSceneHash } from "./hash";
 import { createMessageSender, type RuntimeLike } from "./messaging";
 import { createSmartSync, type SmartSync } from "./smartSync";
 import { createSyncController, type BoardView } from "./syncController";
+import { reconcileCollectionsView } from "./collectionRefresh";
 import { createDomWriteTarget, runWriteStrategies, waitForElement } from "./write";
 
 const SMART_SYNC_INTERVAL_MS = 1500;
@@ -193,6 +194,7 @@ export async function startApp(): Promise<void> {
     readScene: readLocalScene,
     applyScene,
     onChange: (next) => {
+      const wasSynced = state.status.kind === "synced";
       state.status = next.status;
       state.dirty = next.dirty;
       state.board = next.board;
@@ -200,6 +202,10 @@ export async function startApp(): Promise<void> {
       // board (sha null) has not, so the checklist's "Save it" step stays open.
       state.boardSaved = next.board?.sha != null;
       if (!next.dirty) smartSync?.markSynced();
+      // A successful save / remote reload changed the listing (a new board file,
+      // a fresh sha). Refresh it off the critical path so counts and rows catch
+      // up. `loadCollections` coalesces, so a burst of saves issues one listing.
+      if (next.status.kind === "synced" && !wasSynced) void loadCollections({ silent: true });
       render();
     },
   });
@@ -212,7 +218,11 @@ export async function startApp(): Promise<void> {
     intervalMs: SMART_SYNC_INTERVAL_MS,
     onChange: () => {
       refreshLocalInfo();
-      controller.markDirty();
+      // Only a *selected* board can be dirty: with no board there is nothing to
+      // save, and marking the document dirty would strand every `guardDirty`
+      // action (save() can only set an error without a board and never clears
+      // `dirty`). Keep the local counts and render live either way.
+      if (controller.state().board) controller.markDirty();
       render();
     },
     save: () => {
@@ -245,21 +255,66 @@ export async function startApp(): Promise<void> {
     render();
   }
 
-  async function loadCollections(): Promise<void> {
-    if (!state.configured) return;
-    state.loadingCollections = true;
-    render();
+  /** In-flight background refresh, so a burst of saves coalesces into one. */
+  let listingInFlight: Promise<void> | null = null;
+
+  /**
+   * (Re)list collections and boards, serialized through one in-flight request.
+   *
+   * Sharing a single promise across both silent and explicit loads matters: a
+   * silent background refresh (a save, a switch, opening the Boards tab) must
+   * never run concurrently with an explicit load and overwrite its fresher
+   * listing with a stale one. A `silent` refresh is positional (no spinner, no
+   * error banner); an explicit load shows the spinner. The first caller wins
+   * the mode, and every caller awaits the same listing.
+   */
+  function loadCollections(options: { silent?: boolean } = {}): Promise<void> {
+    if (!state.configured) return Promise.resolve();
+    if (listingInFlight) return listingInFlight;
+    const run = runCollectionsLoad(options.silent === true);
+    listingInFlight = run;
+    return run.finally(() => {
+      listingInFlight = null;
+    });
+  }
+
+  async function runCollectionsLoad(silent: boolean): Promise<void> {
+    if (!silent) {
+      state.loadingCollections = true;
+      render();
+    }
     const res = await sender<Collection[]>({ type: "github:listCollections" });
-    state.loadingCollections = false;
+    if (!silent) state.loadingCollections = false;
     if (!res.ok) {
-      setNotice("error", res.error);
+      // A silent background refresh must never interrupt the user with an error
+      // banner: it is an optimization, not an explicit action. Only a
+      // user-initiated listing (boot, Refresh, create/delete) surfaces the
+      // failure. Stale content is surfaced by the counts staying put.
+      if (!silent) setNotice("error", res.error);
       return;
     }
-    collections = res.data;
-    state.collections = collections;
-    if (!state.activeCollection && collections[0]) {
-      state.activeCollection = collections[0].slug;
-    }
+    // A silent background refresh must never interrupt the user with an error
+    // banner (handled above) and must stay out of the way: only a
+    // user-initiated listing (boot, Refresh, create/delete) toggles the
+    // spinner, so open/switch still refresh counts and rows.
+    const next = reconcileCollectionsView(
+      {
+        expandedCollection: state.expandedCollection,
+        activeCollection: state.activeCollection,
+        // Read the live board: it may have changed while the listing was in
+        // flight, and a listing refresh must never clobber the open board with
+        // the snapshot captured when the refresh started.
+        board: state.board,
+      },
+      res.data,
+    );
+    collections = next.collections;
+    state.collections = next.collections;
+    // A refresh must never collapse the collection the user just opened or lose
+    // the open board.
+    state.expandedCollection = next.expandedCollection;
+    state.activeCollection = next.activeCollection;
+    state.board = next.board;
     // Recompute derived flags after a (re)load so the checklist reflects the
     // new collection/board counts.
     state.boardSaved = state.board?.sha != null;
@@ -287,6 +342,8 @@ export async function startApp(): Promise<void> {
     smartSync?.markSynced();
     refreshLocalInfo();
     render();
+    // A switch can adopt a fresh sha; keep the listing current for the panel.
+    void loadCollections({ silent: true });
   }
 
   function newBoard(collectionSlug: string, name: string): void {
@@ -299,6 +356,9 @@ export async function startApp(): Promise<void> {
     state.expandedCollection = collectionSlug;
     refreshLocalInfo();
     render();
+    // The collection's listing may be stale; refresh it off the critical path so
+    // boards that already exist remotely show up with a correct count.
+    void loadCollections({ silent: true });
   }
 
   async function createCollection(name: string): Promise<void> {
@@ -310,17 +370,6 @@ export async function startApp(): Promise<void> {
     state.activeCollection = res.data.slug;
     state.expandedCollection = res.data.slug;
     await loadCollections();
-  }
-
-  /** Drop active/expanded pointers that no longer reference a known collection. */
-  function reconcileCollectionSelection(): void {
-    const slugs = new Set(state.collections.map((collection) => collection.slug));
-    if (state.expandedCollection !== null && !slugs.has(state.expandedCollection)) {
-      state.expandedCollection = null;
-    }
-    if (state.activeCollection === null || !slugs.has(state.activeCollection)) {
-      state.activeCollection = state.collections[0]?.slug ?? null;
-    }
   }
 
   /**
@@ -350,7 +399,6 @@ export async function startApp(): Promise<void> {
       state.expandedCollection = board.collection;
     }
     await loadCollections();
-    reconcileCollectionSelection();
     setNotice("info", `Deleted board «${board.name}» from GitHub.`);
   }
 
@@ -373,7 +421,6 @@ export async function startApp(): Promise<void> {
     }
     if (state.expandedCollection === collection.slug) state.expandedCollection = null;
     await loadCollections();
-    reconcileCollectionSelection();
 
     const { deletedBoards, failures } = res.data;
     const boardWord = deletedBoards === 1 ? "board" : "boards";
@@ -470,6 +517,16 @@ export async function startApp(): Promise<void> {
         void (async () => {
           await controller.save();
           if (controller.state().dirty) {
+            if (controller.state().board === null) {
+              // There is no board to save, so `save()` can never clear `dirty`.
+              // Close the guard and say so rather than proceeding and silently
+              // dropping the local changes.
+              setNotice(
+                "error",
+                "Select or create a board first — there is no board to save.",
+              );
+              return;
+            }
             render();
             return;
           }
@@ -495,6 +552,9 @@ export async function startApp(): Promise<void> {
     onSelectTab: (tab) => {
       state.activeTab = tab;
       render();
+      // Opening the Boards tab must show current content, not the listing
+      // cached at boot.
+      if (tab === "boards" && state.configured) void loadCollections({ silent: true });
     },
     onOpenTokenSettings: () => {
       // The PAT lives on the extension options page, never in this script.

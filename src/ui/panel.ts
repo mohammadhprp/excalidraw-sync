@@ -1221,6 +1221,8 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
   let state: PanelState;
   /** The confirm currently rendered, to reset the phrase field on a new one. */
   let shownConfirm: ConfirmRequest | null = null;
+  /** Last active board path, so a create/switch can clear the New board name. */
+  let lastBoardPath: string | null = null;
 
   function render(next: PanelState): void {
     state = next;
@@ -1325,6 +1327,14 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
     testResult.textContent = state.testResult ?? "";
 
     renderCollections(state);
+
+    // A board becoming active means the New board name was consumed (a create
+    // proceeded, possibly after the guard). Clear it so the typed name is not
+    // resubmitted on the next click.
+    if (state.board?.path !== lastBoardPath) {
+      lastBoardPath = state.board?.path ?? null;
+      if (state.board) newBoardName.value = "";
+    }
 
     // Reset the phrase field whenever a new confirm request is shown, so a
     // previous phrase never leaks into the next dialog.

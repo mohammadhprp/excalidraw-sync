@@ -200,6 +200,11 @@ export function createSyncController(deps: SyncControllerDeps): SyncController {
     setBoard: (board) =>
       set({ board, status: { kind: "idle" }, dirty: false }),
     markDirty: () => {
+      // A document with no board has nothing to save, so it must never become
+      // dirty: `save()` can only set an error without a board and could never
+      // clear `dirty`, which would strand the unsaved-changes guard. Smart sync
+      // calls this on every local scene change, including with no board open.
+      if (!state.board) return;
       if (!state.dirty) set({ dirty: true });
     },
     save,
