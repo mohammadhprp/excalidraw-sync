@@ -46,6 +46,13 @@ export interface ConfirmRequest {
   confirmLabel: string;
   confirmDisabled?: boolean;
   /**
+   * An optional second action beside the primary confirm (for example
+   * "Discard & create" next to "Save & continue"). Rendered only when set, so
+   * the existing dirty/conflict guard is unchanged.
+   */
+  secondaryLabel?: string;
+  onSecondary?: () => void;
+  /**
    * When set, the dialog renders a text field and the confirm button stays
    * disabled until the typed value matches this phrase. Used for destructive
    * actions that need a strong confirmation (e.g. deleting a non-empty
@@ -113,6 +120,7 @@ export interface PanelActions {
   onBadgeMove(position: Point): void;
   onResetBadge(): void;
   onConfirm(): void;
+  onSecondaryConfirm(): void;
   onCancelConfirm(): void;
   onDismissNotice(): void;
 }
@@ -646,6 +654,13 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
     attrs: { type: "button" },
     on: { click: () => actions.onConfirm() },
   }, "Confirm");
+  // Optional second action (e.g. "Discard & create"); hidden unless requested.
+  const confirmAlt = h("button", {
+    class: "ex-btn",
+    hidden: true,
+    attrs: { type: "button" },
+    on: { click: () => actions.onSecondaryConfirm() },
+  });
   const confirmNo = h("button", {
     class: "ex-btn",
     attrs: { type: "button" },
@@ -659,7 +674,7 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
       { class: "ex-confirm" },
       confirmText,
       confirmPhraseField,
-      h("div", { class: "ex-btn-row" }, confirmYes, confirmNo),
+      h("div", { class: "ex-btn-row" }, confirmYes, confirmAlt, confirmNo),
     ),
   );
 
@@ -1346,6 +1361,8 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
     if (state.confirm) {
       confirmText.textContent = state.confirm.message;
       confirmYes.textContent = state.confirm.confirmLabel;
+      confirmAlt.hidden = state.confirm.secondaryLabel === undefined;
+      confirmAlt.textContent = state.confirm.secondaryLabel ?? "";
       confirmPhraseField.hidden = state.confirm.confirmPhrase === undefined;
       updateConfirmEnabled();
     }

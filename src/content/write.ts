@@ -47,16 +47,28 @@ export interface WriteTarget {
   reload(scene: SceneFile): Promise<void>;
 }
 
+export interface WriteOptions {
+  /**
+   * Restrict which strategies may run. A caller can pass a predicate (see
+   * `boardFlow.strategyFullyApplies`) so a scene is routed only through write
+   * paths that can carry all of it, and a partial apply is never accepted as
+   * success. Defaults to allowing every strategy — the proven fallback order.
+   */
+  allow?: (strategy: WriteStrategy) => boolean;
+}
+
 /** Try each strategy in order, stopping at the first that does not throw. */
 export async function runWriteStrategies(
   target: WriteTarget,
   scene: SceneFile,
+  options: WriteOptions = {},
 ): Promise<WriteResult> {
-  const attempts: Array<{ name: WriteStrategy; run: () => Promise<void> }> = [
+  const candidates: Array<{ name: WriteStrategy; run: () => Promise<void> }> = [
     { name: "drop", run: () => target.drop(scene) },
     { name: "paste", run: () => target.paste(scene) },
     { name: "reload", run: () => target.reload(scene) },
   ];
+  const attempts = candidates.filter((candidate) => options.allow?.(candidate.name) ?? true);
 
   let lastError = "";
   for (const attempt of attempts) {

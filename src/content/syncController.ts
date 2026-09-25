@@ -49,7 +49,21 @@ export interface SyncControllerDeps {
 
 export interface SyncController {
   state(): SyncControllerState;
+  /**
+   * Capture the full state (board, dirty flag and status) so a failed
+   * create/switch can be rolled back exactly. `setBoard` resets dirty/status
+   * when the flow points at the target, so the board pointer alone cannot
+   * restore the selection's unsaved state.
+   */
+  snapshot(): SyncControllerState;
   setBoard(board: BoardView | null): void;
+  /**
+   * Restore a state captured with `snapshot()` — board, dirty flag and status
+   * together. Unlike `setBoard` (which opens a board clean), this puts the
+   * previous selection back without silently marking its unsaved work saved or
+   * resetting its status.
+   */
+  restore(snapshot: SyncControllerState): void;
   markDirty(): void;
   save(): Promise<void>;
   keepLocal(): Promise<void>;
@@ -153,7 +167,20 @@ export function createSyncController(deps: SyncControllerDeps): SyncController {
       return;
     }
 
-    await deps.applyScene(res.data);
+    try {
+      await deps.applyScene(res.data);
+    } catch (error) {
+      // The canvas could not be replaced with the remote scene. Do not adopt
+      // the remote sha: nothing was actually applied, so the local scene stays
+      // the base for the next save.
+      set({
+        status: {
+          kind: "error",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+      return;
+    }
     set({
       status: { kind: "synced", at: now() },
       dirty: false,
@@ -176,7 +203,19 @@ export function createSyncController(deps: SyncControllerDeps): SyncController {
       set({ status: { kind: "error", message: res.error } });
       return;
     }
-    await deps.applyScene(res.data);
+    try {
+      await deps.applyScene(res.data);
+    } catch (error) {
+      // Nothing was applied, so keep the current base sha rather than letting a
+      // later save treat the (unreplaced) local scene as matching the remote.
+      set({
+        status: {
+          kind: "error",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+      return;
+    }
 
     // Refresh the concurrency token. `github:readBoard` returns only a
     // SceneFile, so re-list the collection and adopt the matching board's sha.
@@ -197,8 +236,16 @@ export function createSyncController(deps: SyncControllerDeps): SyncController {
 
   return {
     state: () => state,
+    snapshot: () => ({ ...state }),
     setBoard: (board) =>
       set({ board, status: { kind: "idle" }, dirty: false }),
+    // Roll a failed create/switch back to the previous selection exactly: the
+    // captured board, dirty flag and status. `setBoard` cleared dirty/status
+    // when the flow pointed at the target, so restoring only the board would
+    // mark the previous board's unsaved work clean and reset its status. `set`
+    // still emits `onChange`, so the panel re-renders against the restored state.
+    restore: (snapshot) =>
+      set({ board: snapshot.board, status: snapshot.status, dirty: snapshot.dirty }),
     markDirty: () => {
       // A document with no board has nothing to save, so it must never become
       // dirty: `save()` can only set an error without a board and could never

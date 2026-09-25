@@ -25,6 +25,18 @@ import {
   type Point,
 } from "../ui/badgePosition";
 import { installAutomationBridge } from "./automation";
+import {
+  applyBoardCreate,
+  applyBoardSwitch,
+  decideCreateFlow,
+  missingParts,
+  sceneMatches,
+  strategyCompletesSwitch,
+  strategyFullyApplies,
+  waitForAppliedScene,
+  type ApplySceneOptions,
+  type BoardFlowDeps,
+} from "./boardFlow";
 import { collectReferencedFileIds, parseElements, readScene, readTheme, APP_STATE_KEY, ELEMENTS_KEY } from "./scene";
 import { readFilesFromIndexedDb } from "./files";
 import { computeSceneHash } from "./hash";
@@ -37,6 +49,14 @@ import { createDomWriteTarget, runWriteStrategies, waitForElement } from "./writ
 const SMART_SYNC_INTERVAL_MS = 1500;
 /** Keep the primary-button spinner visible this long, to avoid flicker. */
 const MIN_LOADING_MS = 500;
+/**
+ * `awaitSceneApplied` poll cadence and cap. A write target can return before the
+ * page has persisted the scene (`drop` only dispatches), so the create flow
+ * polls the live scene before baselining smart sync. The cap bounds the wait
+ * when a scene never becomes observable.
+ */
+const APPLIED_SCENE_POLL_MS = 100;
+const APPLIED_SCENE_TIMEOUT_MS = 3000;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -181,12 +201,86 @@ export async function startApp(): Promise<void> {
     }, 500);
   }
 
-  async function applyScene(scene: SceneFile): Promise<void> {
-    const result = await runWriteStrategies(writeTarget, scene);
-    if (!result.ok) throw new Error(result.error ?? "Scene write failed.");
+  async function applyScene(
+    scene: SceneFile,
+    options: ApplySceneOptions = {},
+  ): Promise<void> {
+    // Route the write only through strategies that can carry the whole scene:
+    // a fallback that cannot write appState/files must never be accepted as a
+    // full canvas replace, which would leave a merged/partial scene behind. A
+    // board switch additionally requires in-place strategies: `reload`
+    // navigates and would discard the in-memory selection.
+    const result = await runWriteStrategies(writeTarget, scene, {
+      allow: (strategy) =>
+        strategyFullyApplies(strategy, scene) &&
+        (!options.inPlaceOnly || strategyCompletesSwitch(strategy)),
+    });
+    if (!result.ok) {
+      // Name any fallbacks that were skipped because they cannot carry the
+      // scene, rather than surfacing only the last bare write error.
+      const skipped = (["paste", "reload"] as const)
+        .map((strategy) => ({ strategy, missing: missingParts(strategy, scene) }))
+        .filter((entry) => entry.missing.length > 0)
+        .map((entry) => `${entry.strategy} (${entry.missing.join(", ")})`);
+      const suffix =
+        skipped.length > 0
+          ? ` Skipped fallback write paths that cannot fully replace the scene: ${skipped.join("; ")}.`
+          : "";
+      throw new Error((result.error ?? "Scene write failed.") + suffix);
+    }
     state.writeStrategy = result.strategy;
     refreshLocalInfo();
     scheduleLocalRefresh();
+  }
+
+  /**
+   * Resolve once the applied scene is actually on the canvas (or the wait caps
+   * out). `applyScene` may return before an async writer (`drop`) has persisted
+   * the scene, so a caller that baselines smart sync after it would capture the
+   * previous drawing and let the writer's own persist auto-save.
+   */
+  const awaitSceneApplied = (scene: SceneFile): Promise<void> =>
+    waitForAppliedScene(scene, readLocalScene, {
+      pollMs: APPLIED_SCENE_POLL_MS,
+      timeoutMs: APPLIED_SCENE_TIMEOUT_MS,
+    });
+
+  /** True when the live canvas holds elements that are not saved to any board. */
+  function hasLocalDrawing(): boolean {
+    return parseElements(storage.getItem(ELEMENTS_KEY)).length > 0;
+  }
+
+  /** The controller/smart-sync verbs the create and switch flows drive. */
+  function boardFlowDeps(): BoardFlowDeps {
+    return {
+      snapshot: () => controller.snapshot(),
+      setBoard: (next: BoardView | null) => controller.setBoard(next),
+      restore: (snapshot) => controller.restore(snapshot),
+      applyScene,
+      awaitSceneApplied,
+      markDirty: () => controller.markDirty(),
+      markSynced: () => smartSync?.markSynced(),
+    };
+  }
+
+  /**
+   * Best-effort confirmation that the canvas now holds `expected`. The live
+   * Excalidraw write is external and asynchronous, so this is deferred and
+   * advisory: a mismatch is surfaced for the user, never treated as a failed
+   * switch (the board pointer already reflects the selected board).
+   */
+  function verifyAppliedScene(expected: SceneFile, label: string): void {
+    setTimeout(() => {
+      void (async () => {
+        const actual = await readLocalScene();
+        if (!sceneMatches(expected, actual)) {
+          setNotice(
+            "error",
+            `Opened ${label}, but the canvas may not fully match it. Use Reload from GitHub to retry.`,
+          );
+        }
+      })();
+    }, 500);
   }
 
   const controller = createSyncController({
@@ -330,27 +424,45 @@ export async function startApp(): Promise<void> {
       return;
     }
     try {
-      await applyScene(res.data);
+      // The controller is pointed at the target board around the write, so a
+      // smart-sync tick can never attribute the incoming scene to the previous
+      // board (which would save the new content into the old path).
+      await applyBoardSwitch(boardFlowDeps(), board, res.data);
     } catch (error) {
+      // `applyBoardSwitch` restored the previous selection; do not claim a
+      // switch happened and do not leave the board attributed to a scene it
+      // does not hold.
       setNotice("error", errorMessage(error));
+      render();
       return;
     }
-    controller.setBoard(board);
     state.activeCollection = board.collection;
     // Reveal the opened board in its collection in the navigator.
     state.expandedCollection = board.collection;
-    smartSync?.markSynced();
     refreshLocalInfo();
     render();
+    verifyAppliedScene(res.data, `«${board.name}»`);
     // A switch can adopt a fresh sha; keep the listing current for the panel.
     void loadCollections({ silent: true });
   }
 
-  function newBoard(collectionSlug: string, name: string): void {
+  async function newBoard(collectionSlug: string, name: string): Promise<void> {
     const rootPath = state.settings?.rootPath || "excalidraw";
     const path = boardFilePath(rootPath, collectionSlug, name);
-    controller.setBoard({ collection: collectionSlug, name, path, sha: null });
-    controller.markDirty();
+    try {
+      // Creating opens a genuinely empty canvas: the new board is pointed at
+      // first and the live scene is cleared to an empty drawing, so the drawing
+      // already on screen can never become the new board's content.
+      await applyBoardCreate(
+        boardFlowDeps(),
+        { collection: collectionSlug, name, path, sha: null },
+        origin,
+      );
+    } catch (error) {
+      setNotice("error", errorMessage(error));
+      render();
+      return;
+    }
     state.activeCollection = collectionSlug;
     // Reveal the new board in the navigator rather than leaving it collapsed.
     state.expandedCollection = collectionSlug;
@@ -541,6 +653,94 @@ export async function startApp(): Promise<void> {
     render();
   }
 
+  /**
+   * Guard for Create board. Creating opens a fresh, empty canvas, so it must
+   * (a) never adopt the drawing already on screen and (b) never silently
+   * discard unsaved work. `decideCreateFlow` owns the pure decision; this wires
+   * it to the panel's confirm dialog, adding a "Discard & create" second action
+   * when there is a board that can be saved first. The existing dirty/conflict
+   * guard (`guardDirty`) is untouched.
+   */
+  function guardCreateBoard(collectionSlug: string, name: string): void {
+    const current = controller.state();
+    const decision = decideCreateFlow({
+      boardOpen: current.board !== null,
+      dirty: current.dirty,
+      conflicted: current.status.kind === "conflict",
+      hasLocalDrawing: hasLocalDrawing(),
+    });
+
+    if (decision.kind === "proceed") {
+      void newBoard(collectionSlug, name);
+      return;
+    }
+
+    const openName = current.board?.name ?? "the current board";
+
+    if (decision.kind === "blocked") {
+      state.confirm = {
+        message: `Create board ${name}? Resolve the conflict on «${openName}» first.`,
+        confirmLabel: "Close",
+        confirmDisabled: false,
+        onConfirm: () => {
+          state.confirm = null;
+          render();
+        },
+        onCancel: () => {
+          state.confirm = null;
+          render();
+        },
+      };
+      render();
+      return;
+    }
+
+    const dirtyBoard = decision.reason === "dirty-board";
+    state.confirm = {
+      message: dirtyBoard
+        ? `Create board ${name}? «${openName}» has unsaved changes, and a new board opens an empty canvas. Save them or discard them?`
+        : `Create board ${name}? The drawing on the canvas is not saved to a board, and a new board opens an empty canvas. Discard the drawing?`,
+      // The safe default: save an open board, or keep a board-less drawing.
+      confirmLabel: dirtyBoard ? "Save & continue" : "Discard & create",
+      confirmDisabled: false,
+      ...(dirtyBoard
+        ? {
+            secondaryLabel: "Discard & create",
+            onSecondary: () => {
+              state.confirm = null;
+              render();
+              void newBoard(collectionSlug, name);
+            },
+          }
+        : {}),
+      onConfirm: () => {
+        state.confirm = null;
+        if (!dirtyBoard) {
+          // Board-less drawing: there is no board to save it to, so the only
+          // way forward is the explicitly chosen discard. Cancel keeps it.
+          render();
+          void newBoard(collectionSlug, name);
+          return;
+        }
+        void (async () => {
+          await controller.save();
+          if (controller.state().dirty) {
+            // The save did not clear the changes (error or conflict): keep the
+            // guard closed and do not discard the work.
+            render();
+            return;
+          }
+          await newBoard(collectionSlug, name);
+        })();
+      },
+      onCancel: () => {
+        state.confirm = null;
+        render();
+      },
+    };
+    render();
+  }
+
   const actions: PanelActions = {
     onToggleExpanded: (expanded) => {
       state.expanded = expanded;
@@ -588,8 +788,7 @@ export async function startApp(): Promise<void> {
     onDeleteCollection: (collection) => void deleteCollection(collection),
     onCreateCollection: (name) => void createCollection(name),
     onRefreshCollections: () => void loadCollections(),
-    onNewBoard: (collectionSlug, name) =>
-      guardDirty(`Create board ${name}?`, () => newBoard(collectionSlug, name)),
+    onNewBoard: (collectionSlug, name) => guardCreateBoard(collectionSlug, name),
     onKeepLocal: () => void controller.keepLocal(),
     onKeepRemote: () => void controller.keepRemote(),
     onSaveSettings: (patch) => void saveSettings(patch, "Settings saved."),
@@ -609,6 +808,7 @@ export async function startApp(): Promise<void> {
       render();
     },
     onConfirm: () => state.confirm?.onConfirm(),
+    onSecondaryConfirm: () => state.confirm?.onSecondary?.(),
     onCancelConfirm: () => state.confirm?.onCancel(),
     onDismissNotice: () => {
       state.notice = null;
