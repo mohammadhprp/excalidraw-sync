@@ -37,10 +37,17 @@ The fine-grained PAT is stored in `chrome.storage.local` and read only by the
 worker. `settings:get` returns a `hasToken` boolean instead of the token. The
 token is entered on the extension **options page** (`src/options/**`, an
 extension-origin document), never in the injected panel: `src/content/**` and
-`src/ui/**` only ever see `hasToken`. The panel's "Open token settings"
-affordance relays `ui:openOptions` to the worker, which calls
-`chrome.runtime.openOptionsPage()` — content scripts cannot call it directly,
-as their `chrome.runtime` surface omits it.
+`src/ui/**` only ever see `hasToken`. The options page hosts a three-step
+onboarding wizard — **Connect** (paste the PAT) → **Repository** (pick a repo
+the token can access, plus branch, root path and author) → **Verify** (test the
+connection) — and the repo picker runs there too, listing repositories via
+`github:listRepos`. The token is written only by the wizard's Connect step
+(`buildTokenPatch`); the Repository step submits a non-secret patch
+(`buildRepositoryPatch`) that never emits a `token` key. The panel's "Open token
+settings" affordance (and the Boards-tab "Set up GitHub" button) relays
+`ui:openOptions` to the worker, which calls `chrome.runtime.openOptionsPage()` —
+content scripts cannot call it directly, as their `chrome.runtime` surface omits
+it.
 
 ### Scene read/write (proven by the investigation)
 
@@ -70,7 +77,14 @@ tab**; when it is incomplete, the Settings tab label shows an amber dot and the
 tab opens with a banner listing exactly what is missing (token / owner / repo),
 derived by the pure `ui/setupState.ts`. A near-token **inline help** disclosure
 explains creating a fine-grained PAT, scoping it to one repository, granting
-Contents: Read and write, and setting an expiration. The palette follows
+Contents: Read and write, and setting an expiration. The **Boards tab** opens
+with a first-run **Get started** card: a checklist (**Connect GitHub → Create a
+collection → Create a board → Save it**, from the pure `ui/onboarding.ts`) that
+hides once every step is done. While a step is next, its form becomes the
+prominent empty state — with no collections the **New collection** section is
+promoted to "Create your first collection", and with no active board the **New
+board** section reads "Create your first board" — and the current-board card
+(and its Save) stays hidden until a board is active. The palette follows
 `localStorage["excalidraw-theme"]` (light/dark): resolved synchronously before
 the first paint (no light flash when loading into dark) and polled + observed so
 a runtime theme toggle updates the panel live.
@@ -123,11 +137,15 @@ test file lives under `src/`.
 
 ## The frozen interface (`src/lib/types.ts`)
 
-- `SceneFile`, `BoardRef`, `Collection`, `SyncOutcome`, `AuthorIdentity`,
-  `Settings`, `PublicSettings`.
+- `SceneFile`, `BoardRef`, `Collection`, `RepoSummary`, `SyncOutcome`,
+  `AuthorIdentity`, `Settings`, `PublicSettings`.
 - Functions (exported from `src/lib/index.ts`): `readBoard`, `saveBoard`,
-  `listCollections`, `listBoards`, `createCollection`, `renderCommitMessage`.
-- Message protocol types: `Req`, `Res<T>`.
+  `listCollections`, `listBoards`, `createCollection`, `renderCommitMessage`,
+  plus `listAccessibleRepos` (the token-only repo lister for the options
+  picker).
+- Message protocol types: `Req`, `Res<T>`. Besides the collection/board calls,
+  `Req` carries `github:listRepos`, the token-only message that returns
+  `RepoSummary[]` for the options-page repo picker.
 
 `src/lib/config.ts` holds the module-level configured client that the frozen
 top-level functions delegate to (`configureSync` / `configureFromSettings`).
@@ -143,6 +161,12 @@ top-level functions delegate to (`configureSync` / `configureFromSettings`).
 - **Conflict detection:** `GET` first and compare the remote `sha` to the
   caller's `baseSha`. Equal (or `404` with `baseSha === null`) → `PUT`; differ →
   return `{ status: "conflict", remoteSha, baseSha }` and issue **no** `PUT`.
+- `GET /user/repos?per_page=100&sort=updated` (`listAccessibleRepos`) → `200`
+  with the repositories the token can access, newest-updated first, mapped to
+  `RepoSummary { owner, name, fullName, private, defaultBranch }`. It needs
+  **only** a token (no owner/repo), because the picker runs before a repository
+  is configured; the worker relays it over the token-only `github:listRepos`
+  message. Single page, 100 repositories max.
 - Fine-grained PAT permission: **Contents: Read and write**. JSON Contents API
   caps `content` at 1 MB.
 
@@ -181,7 +205,14 @@ Implemented:
   (16/32/48/128), wired into the manifest `icons` + `action.default_icon`, and
   the logo shown in the panel header from the packaged asset.
 - Extension options page (`src/options/**`) that is the only place the PAT is
-  entered; the panel shows `hasToken` and relays `ui:openOptions`.
+  entered; the panel shows `hasToken` and relays `ui:openOptions`. The page is a
+  guided three-step onboarding wizard — Connect → Repository → Verify — with an
+  inline token walkthrough, a searchable repo picker (`github:listRepos` /
+  `listAccessibleRepos`, `GET /user/repos`), and a Test connection step that
+  adopts the repository's default branch.
+- Panel first-run flow: a Boards-tab **Get started** checklist (Connect GitHub →
+  Create a collection → Create a board → Save it; pure `ui/onboarding.ts`) plus
+  guided empty states that promote the next action until setup is complete.
 - READ (localStorage + IndexedDB `files-db`) and WRITE (synthetic `drop`, then
   paste, then localStorage+reload), with the active strategy surfaced in the
   panel.

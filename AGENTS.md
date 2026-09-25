@@ -61,6 +61,7 @@ src/
     tabs.ts            pure tab state machine (roving tabindex)
     setupState.ts      pure "needs setup" state (missing token/owner/repo)
     badgePosition.ts   draggable badge geometry + persistence (pure)
+    onboarding.ts      pure first-run checklist (connect -> collection -> board -> save)
     styles.ts          panel CSS, scoped to the shadow root
     dom.ts             tiny hyperscript helper
     format.ts          pure status/settings-form helpers
@@ -68,6 +69,7 @@ src/
     index.html         options page markup
     options.ts         loads/saves settings via the frozen protocol
     options.css        options page styles
+    wizard.ts          pure onboarding step machine + repo-picker helpers
     token.ts           `buildTokenPatch` (token value handling lives ONLY here)
 tests/                 unit tests mirroring the src/ layout (lib/ background/
                        content/ ui/ options/); vitest targets `tests/**/*.test.ts`
