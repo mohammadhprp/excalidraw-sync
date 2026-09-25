@@ -23,6 +23,7 @@ import {
   type SettingsFormValues,
 } from "./format";
 import { setupState } from "./setupState";
+import { nextStep, onboardingComplete, onboardingSteps } from "./onboarding";
 import { nextTabId, TAB_IDS, TAB_LABELS, type TabId } from "./tabs";
 import {
   BADGE_MARGIN,
@@ -61,6 +62,8 @@ export interface PanelState {
   status: SyncStatus;
   dirty: boolean;
   board: BoardView | null;
+  /** True once the active board has a remote sha (i.e. saved to GitHub). */
+  boardSaved: boolean;
   collections: Collection[];
   loadingCollections: boolean;
   expandedCollection: string | null;
@@ -354,19 +357,44 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
     },
   }, "Create");
 
-  const boardsPanel = h(
-    "section",
-    { class: "ex-tabpanel", id: "ex-panel-boards", role: "tabpanel", attrs: { "aria-labelledby": "ex-tab-boards" } },
-    // The current-board card groups the primary Save with the secondary Reload.
-    h(
-      "div",
-      { class: "ex-card ex-board-card" },
-      boardMeta,
-      savePrimary.button,
-      savePrimary.error,
-      h("div", { class: "ex-row" }, reloadBtn),
-    ),
-    boardsConflict,
+  /* First-run experience -------------------------------------------------- */
+  // The checklist mirrors the pure `onboardingSteps`; it is rebuilt each render
+  // and the whole card hides once every step is done.
+  const onboardingChecklist = h("ol", {
+    class: "ex-checklist",
+    attrs: { "aria-label": "Setup progress" },
+  });
+  const setupGithubBtn = h("button", {
+    class: "ex-primary block",
+    attrs: { type: "button" },
+    on: { click: () => actions.onOpenTokenSettings() },
+  }, "Set up GitHub");
+  const getStartedCard = h(
+    "div",
+    { class: "ex-card ex-get-started", hidden: true },
+    h("h3", { class: "ex-get-started-title", text: "Get started" }),
+    h("p", {
+      class: "ex-get-started-lede",
+      text: "Connect GitHub, then create a collection and a board to save. Four quick steps.",
+    }),
+    onboardingChecklist,
+    setupGithubBtn,
+  );
+
+  // The current-board card groups the primary Save with the secondary Reload.
+  // It is hidden until a board is active, so no unusable Save is shown.
+  const currentBoardCard = h(
+    "div",
+    { class: "ex-card ex-board-card" },
+    boardMeta,
+    savePrimary.button,
+    savePrimary.error,
+    h("div", { class: "ex-row" }, reloadBtn),
+  );
+
+  const boardsListSection = h(
+    "div",
+    { class: "ex-section" },
     h("div", { class: "ex-divider" }),
     h(
       "div",
@@ -376,12 +404,47 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
     ),
     field("Collection", boardCollectionSelect),
     collectionsList,
+  );
+
+  const newBoardHint = h("p", {
+    class: "ex-empty-hint",
+    hidden: true,
+    text: "A board is a drawing saved inside a collection.",
+  });
+  const newBoardTitle = h("h3", { class: "ex-section-title", text: "New board" });
+  const newBoardSection = h(
+    "div",
+    { class: "ex-section" },
     h("div", { class: "ex-divider" }),
-    h("h3", { class: "ex-section-title", text: "New board" }),
+    newBoardTitle,
+    newBoardHint,
     h("div", { class: "ex-row" }, h("div", { class: "ex-grow" }, newBoardName), newBoardBtn),
+  );
+
+  const newCollectionHint = h("p", {
+    class: "ex-empty-hint",
+    hidden: true,
+    text: "A collection is a folder that groups related boards.",
+  });
+  const newCollectionTitle = h("h3", { class: "ex-section-title", text: "New collection" });
+  const newCollectionSection = h(
+    "div",
+    { class: "ex-section" },
     h("div", { class: "ex-divider" }),
-    h("h3", { class: "ex-section-title", text: "New collection" }),
+    newCollectionTitle,
+    newCollectionHint,
     h("div", { class: "ex-row" }, h("div", { class: "ex-grow" }, newCollectionName), newCollectionBtn),
+  );
+
+  const boardsPanel = h(
+    "section",
+    { class: "ex-tabpanel", id: "ex-panel-boards", role: "tabpanel", attrs: { "aria-labelledby": "ex-tab-boards" } },
+    getStartedCard,
+    currentBoardCard,
+    boardsConflict,
+    boardsListSection,
+    newBoardSection,
+    newCollectionSection,
   );
 
   /* Sync tab ------------------------------------------------------------- */
@@ -834,6 +897,87 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
     }
   }
 
+  function activeCollection(s: PanelState): Collection | undefined {
+    return (
+      s.collections.find((collection) => collection.slug === s.activeCollection) ??
+      s.collections[0]
+    );
+  }
+
+  /**
+   * Render the first-run checklist and guide the flow with clear empty states.
+   * The checklist shows until every step is done; while a step is next its form
+   * becomes the prominent empty state and the unusable board card stays hidden.
+   */
+  function renderOnboarding(s: PanelState): void {
+    const steps = onboardingSteps({
+      hasToken: s.hasToken,
+      owner: s.settings?.owner ?? "",
+      repo: s.settings?.repo ?? "",
+      collectionCount: s.collections.length,
+      hasBoard: s.board !== null,
+      boardSaved: s.boardSaved,
+    });
+    const complete = onboardingComplete(steps);
+    getStartedCard.hidden = complete;
+    // The "Set up GitHub" button is only actionable while setup is missing.
+    setupGithubBtn.hidden = s.configured;
+
+    const hasCollections = s.collections.length > 0;
+    const loading = s.loadingCollections;
+    const activeBoardCount = activeCollection(s)?.boards.length ?? 0;
+
+    // The board list needs a collection; while the first load runs keep it
+    // visible so its "Loading…" line shows instead of flashing the empty state.
+    boardsListSection.hidden = !s.configured || (!loading && !hasCollections);
+
+    const collectionEmpty = s.configured && !loading && !hasCollections;
+    newCollectionSection.hidden = !s.configured;
+    newCollectionSection.classList.toggle("ex-empty-state", collectionEmpty);
+    newCollectionTitle.textContent = collectionEmpty
+      ? "Create your first collection"
+      : "New collection";
+    newCollectionHint.hidden = !collectionEmpty;
+
+    const boardEmpty =
+      s.configured && !loading && hasCollections && s.board === null && activeBoardCount === 0;
+    // A new board needs a collection to live in; hide the form until one exists
+    // (including while the first list is still loading).
+    newBoardSection.hidden = !s.configured || !hasCollections;
+    newBoardSection.classList.toggle("ex-empty-state", boardEmpty);
+    newBoardTitle.textContent = boardEmpty ? "Create your first board" : "New board";
+    newBoardHint.hidden = !boardEmpty;
+
+    clear(onboardingChecklist);
+    if (complete) return;
+    const current = nextStep(steps);
+    for (const step of steps) {
+      const isCurrent = current !== null && current.id === step.id;
+      onboardingChecklist.append(
+        h(
+          "li",
+          {
+            class: `ex-check-item${step.done ? " done" : ""}${isCurrent ? " current" : ""}`,
+            ...(isCurrent ? { attrs: { "aria-current": "step" } } : {}),
+          },
+          h("span", {
+            class: "ex-check-marker",
+            attrs: { "aria-hidden": "true" },
+            text: step.done ? "\u2713" : "",
+          }),
+          h(
+            "span",
+            { class: "ex-check-body" },
+            h("span", { class: "ex-check-label", text: step.label }),
+            step.description
+              ? h("span", { class: "ex-check-desc", text: step.description })
+              : null,
+          ),
+        ),
+      );
+    }
+  }
+
   function renderCollections(state: PanelState): void {
     clear(collectionsList);
 
@@ -954,6 +1098,8 @@ export function createPanel(root: ShadowRoot, actions: PanelActions): Panel {
     boardMeta.textContent = `Remote: ${shortSha(state.board?.sha ?? null)} · local: ${elements} elements, ${images} images${strategy}`;
     reloadBtn.disabled = !state.configured || state.board === null;
     boardsConflict.hidden = state.status.kind !== "conflict";
+    currentBoardCard.hidden = !state.configured || state.board === null;
+    renderOnboarding(state);
 
     /* Sync */
     syncPrimary.update({
@@ -1028,6 +1174,7 @@ function defaultState(): PanelState {
     status: { kind: "idle" },
     dirty: false,
     board: null,
+    boardSaved: false,
     collections: [],
     loadingCollections: false,
     expandedCollection: null,

@@ -463,4 +463,80 @@ export const PANEL_CSS = `
   padding: var(--ex-s3);
 }
 .ex-confirm p { margin: 0 0 var(--ex-s3); font-size: 12px; }
+
+/* First-run: Get started card + checklist --------------------------------- */
+/* Single-class selectors keep these below the .ex-root [hidden] rule (0,2,0),
+   so the hidden attribute still wins without an explicit companion. */
+.ex-get-started {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ex-s2);
+  border-color: var(--ex-accent);
+  background: var(--ex-bg);
+}
+.ex-get-started-title { margin: 0; font-size: 14px; font-weight: 700; }
+.ex-get-started-lede { margin: 0; font-size: 12px; color: var(--ex-muted); }
+.ex-checklist {
+  list-style: none;
+  margin: var(--ex-s1) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.ex-check-item {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--ex-s2);
+  padding-bottom: var(--ex-s3);
+}
+.ex-check-item:last-child { padding-bottom: 0; }
+/* Connector from each marker down to the next step. */
+.ex-check-item:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: 8px;
+  top: 18px;
+  bottom: 0;
+  width: 2px;
+  background: var(--ex-border-strong);
+}
+.ex-check-item.done:not(:last-child)::before { background: var(--ex-green); }
+.ex-check-marker {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--ex-border-strong);
+  background: var(--ex-bg);
+  color: var(--ex-accent-fg);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+}
+.ex-check-item.done .ex-check-marker {
+  border-color: var(--ex-green);
+  background: var(--ex-green);
+}
+.ex-check-item.current .ex-check-marker { border-color: var(--ex-accent); }
+.ex-check-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; padding-top: 1px; }
+.ex-check-label { font-size: 12px; font-weight: 600; }
+.ex-check-item.current .ex-check-label { color: var(--ex-accent); }
+.ex-check-item.done .ex-check-label { color: var(--ex-muted); font-weight: 500; }
+.ex-check-desc { font-size: 11px; color: var(--ex-muted); }
+
+/* First-run empty states -------------------------------------------------- */
+.ex-empty-state {
+  border: 1px dashed var(--ex-border-strong);
+  border-radius: var(--ex-radius-sm);
+  background: var(--ex-surface);
+  padding: var(--ex-s3);
+}
+.ex-empty-state .ex-section-title { color: var(--ex-text); }
+/* The section's leading divider belongs outside the dashed empty-state box. */
+.ex-empty-state > .ex-divider { display: none; }
+.ex-empty-hint { margin: 0 0 var(--ex-s2); font-size: 12px; color: var(--ex-muted); }
 `;

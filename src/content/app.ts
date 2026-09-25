@@ -85,6 +85,7 @@ function initialState(): PanelState {
     status: { kind: "idle" },
     dirty: false,
     board: null,
+    boardSaved: false,
     collections: [],
     loadingCollections: false,
     expandedCollection: null,
@@ -194,6 +195,9 @@ export async function startApp(): Promise<void> {
       state.status = next.status;
       state.dirty = next.dirty;
       state.board = next.board;
+      // A board with a remote sha has been saved to GitHub; a freshly created
+      // board (sha null) has not, so the checklist's "Save it" step stays open.
+      state.boardSaved = next.board?.sha != null;
       if (!next.dirty) smartSync?.markSynced();
       render();
     },
@@ -255,6 +259,9 @@ export async function startApp(): Promise<void> {
     if (!state.activeCollection && collections[0]) {
       state.activeCollection = collections[0].slug;
     }
+    // Recompute derived flags after a (re)load so the checklist reflects the
+    // new collection/board counts.
+    state.boardSaved = state.board?.sha != null;
     render();
   }
 
