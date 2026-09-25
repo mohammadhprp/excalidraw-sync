@@ -12,6 +12,7 @@ import type {
   AuthorIdentity,
   BoardRef,
   Collection,
+  CollectionDeleteResult,
   RepoSummary,
   SceneFile,
   Settings,
@@ -41,6 +42,11 @@ async function apiError(
   return new Error(
     `GitHub ${method} ${path} failed: ${res.status}${detail ? ` ${detail}` : ""}`,
   );
+}
+
+/** Render an unknown thrown value as a message string. */
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -85,6 +91,15 @@ export interface GitHubClient {
   listCollections(): Promise<Collection[]>;
   listBoards(collection: string): Promise<BoardRef[]>;
   createCollection(name: string): Promise<Collection>;
+  /** DELETE one board file by path + blob sha. A missing file is a no-op. */
+  deleteBoard(path: string, sha: string): Promise<void>;
+  /**
+   * Delete every board in a collection, then its `.collection.json` marker.
+   * The marker is left in place when any board fails, so a partially deleted
+   * collection keeps its display name instead of orphaning boards under a
+   * slug-only directory.
+   */
+  deleteCollection(slug: string): Promise<CollectionDeleteResult>;
   testConnection(): Promise<ConnectionInfo>;
 }
 
@@ -371,6 +386,88 @@ export function createGitHubClient(
     return { slug, name, boards: [] };
   }
 
+  /**
+   * DELETE one file by path + blob sha.
+   *
+   * `200`/`204` resolve; `404` also resolves because the file is already gone
+   * (the caller's intent — the board is not in the repo — is satisfied). Any
+   * other status throws the standard client error.
+   */
+  async function deleteFile(
+    path: string,
+    sha: string,
+    message: string,
+  ): Promise<void> {
+    const body = {
+      message,
+      sha,
+      branch: config.branch,
+      author: { name: config.author.name, email: config.author.email },
+      committer: { name: config.author.name, email: config.author.email },
+    };
+    const res = await fetchImpl(contentUrl(path, false), {
+      method: "DELETE",
+      headers: headers(true),
+      body: JSON.stringify(body),
+    });
+    if (res.status === 200 || res.status === 204 || res.status === 404) return;
+    throw await apiError("DELETE", path, res);
+  }
+
+  /** DELETE a board, with a message naming its collection and board. */
+  async function deleteBoard(path: string, sha: string): Promise<void> {
+    const parsed = parseBoardPath(path);
+    await deleteFile(
+      path,
+      sha,
+      `chore: delete board ${parsed.collection}/${parsed.board}`,
+    );
+  }
+
+  async function deleteCollection(
+    slug: string,
+  ): Promise<CollectionDeleteResult> {
+    const boards = await listBoardsInternal(slug);
+    let deletedBoards = 0;
+    const failures: string[] = [];
+
+    for (const board of boards) {
+      try {
+        if (!board.sha) {
+          throw new Error("missing blob sha");
+        }
+        await deleteBoard(board.path, board.sha);
+        deletedBoards += 1;
+      } catch (error) {
+        failures.push(`${board.path}: ${errorMessage(error)}`);
+      }
+    }
+
+    // A failed board means the collection is only partially deleted. Keep the
+    // name marker so the collection is not orphaned under a slug-only
+    // directory, and report what remains.
+    if (failures.length > 0) {
+      return { deletedBoards, failures };
+    }
+
+    const markerPath = collectionMarkerPath(config.rootPath, slug);
+    const marker = await getFile(markerPath);
+    // A missing marker is fine: the boards are gone and the name was implicit.
+    if (marker) {
+      try {
+        await deleteFile(
+          markerPath,
+          marker.sha,
+          `chore: delete collection ${slug}`,
+        );
+      } catch (error) {
+        failures.push(`${markerPath}: ${errorMessage(error)}`);
+      }
+    }
+
+    return { deletedBoards, failures };
+  }
+
   async function testConnection(): Promise<ConnectionInfo> {
     const url = `${API_ROOT}/repos/${encodeURIComponent(
       config.owner,
@@ -402,6 +499,8 @@ export function createGitHubClient(
     listCollections,
     listBoards: listBoardsInternal,
     createCollection,
+    deleteBoard,
+    deleteCollection,
     testConnection,
   };
 }

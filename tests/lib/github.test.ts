@@ -528,6 +528,127 @@ describe("createCollection", () => {
   });
 });
 
+describe("deleteBoard", () => {
+  it("DELETEs the board with sha, branch, author/committer and a naming message", async () => {
+    const { client, calls } = clientFrom(() => new Response(null, { status: 200 }));
+
+    await expect(client.deleteBoard(PATH, "blob-1")).resolves.toBeUndefined();
+
+    expect(calls).toHaveLength(1);
+    const call = calls[0];
+    expect(call?.method).toBe("DELETE");
+    expect(call?.url).toBe(
+      "https://api.github.com/repos/acme/boards/contents/excalidraw/design/flow.excalidraw",
+    );
+    expect(call?.headers["Content-Type"]).toBe("application/json");
+    expect(call?.body).toEqual({
+      message: "chore: delete board design/flow",
+      sha: "blob-1",
+      branch: "main",
+      author: { name: "Ada Lovelace", email: "ada@example.com" },
+      committer: { name: "Ada Lovelace", email: "ada@example.com" },
+    });
+  });
+
+  it("resolves silently on 204", async () => {
+    const { client } = clientFrom(() => new Response(null, { status: 204 }));
+    await expect(client.deleteBoard(PATH, "blob-1")).resolves.toBeUndefined();
+  });
+
+  it("resolves silently when the file is already gone (404)", async () => {
+    const { client } = clientFrom(() =>
+      jsonResponse(404, { message: "Not Found" }),
+    );
+    await expect(client.deleteBoard(PATH, "blob-1")).resolves.toBeUndefined();
+  });
+
+  it("throws the standard client error on any other status (500)", async () => {
+    const { client } = clientFrom(() =>
+      jsonResponse(500, { message: "Server Error" }),
+    );
+    await expect(client.deleteBoard(PATH, "blob-1")).rejects.toThrow(
+      "GitHub DELETE excalidraw/design/flow.excalidraw failed: 500 Server Error",
+    );
+  });
+});
+
+describe("deleteCollection", () => {
+  it("deletes every board, then the marker, and reports the count", async () => {
+    const { client, calls } = clientFrom((method, url) => {
+      if (method === "GET" && url.pathname.endsWith("/contents/excalidraw/design")) {
+        return jsonResponse(200, [
+          { type: "file", name: "a.excalidraw", path: "excalidraw/design/a.excalidraw", sha: "sa" },
+          { type: "file", name: "b.excalidraw", path: "excalidraw/design/b.excalidraw", sha: "sb" },
+        ]);
+      }
+      if (
+        method === "GET" &&
+        url.pathname.endsWith("/contents/excalidraw/design/.collection.json")
+      ) {
+        return jsonResponse(200, {
+          type: "file",
+          name: ".collection.json",
+          path: "excalidraw/design/.collection.json",
+          sha: "sm",
+          encoding: "base64",
+          content: encodeBase64Utf8(JSON.stringify({ name: "Design" })),
+        });
+      }
+      if (method === "DELETE") return new Response(null, { status: 200 });
+      return jsonResponse(404, { message: "Not Found" });
+    });
+
+    await expect(client.deleteCollection("design")).resolves.toEqual({
+      deletedBoards: 2,
+      failures: [],
+    });
+
+    // Order: list dir -> delete each board -> read marker -> delete marker.
+    expect(calls.map((call) => call.method)).toEqual([
+      "GET",
+      "DELETE",
+      "DELETE",
+      "GET",
+      "DELETE",
+    ]);
+    const deletes = calls.filter((call) => call.method === "DELETE");
+    expect(deletes.map((call) => call.url)).toEqual([
+      "https://api.github.com/repos/acme/boards/contents/excalidraw/design/a.excalidraw",
+      "https://api.github.com/repos/acme/boards/contents/excalidraw/design/b.excalidraw",
+      "https://api.github.com/repos/acme/boards/contents/excalidraw/design/.collection.json",
+    ]);
+    expect(deletes[2]?.body?.sha).toBe("sm");
+    expect(deletes[2]?.body?.message).toBe("chore: delete collection design");
+  });
+
+  it("leaves the marker untouched and reports the path when a board delete fails", async () => {
+    const { client, calls } = clientFrom((method, url) => {
+      if (method === "GET" && url.pathname.endsWith("/contents/excalidraw/design")) {
+        return jsonResponse(200, [
+          { type: "file", name: "a.excalidraw", path: "excalidraw/design/a.excalidraw", sha: "sa" },
+          { type: "file", name: "b.excalidraw", path: "excalidraw/design/b.excalidraw", sha: "sb" },
+        ]);
+      }
+      if (method === "DELETE" && url.pathname.endsWith("/a.excalidraw")) {
+        return jsonResponse(500, { message: "boom" });
+      }
+      if (method === "DELETE") return new Response(null, { status: 200 });
+      return jsonResponse(404, { message: "Not Found" });
+    });
+
+    const result = await client.deleteCollection("design");
+
+    expect(result).toEqual({
+      deletedBoards: 1,
+      failures: [
+        "excalidraw/design/a.excalidraw: GitHub DELETE excalidraw/design/a.excalidraw failed: 500 boom",
+      ],
+    });
+    // The marker must never be read or deleted when a board survives.
+    expect(calls.some((call) => call.url.includes(".collection.json"))).toBe(false);
+  });
+});
+
 describe("testConnection", () => {
   it("reports the repo default branch and sends a no-store GET", async () => {
     const { client, calls } = clientFrom(() =>

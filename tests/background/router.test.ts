@@ -21,6 +21,8 @@ function fakeClient(overrides: Partial<GitHubClient> = {}): GitHubClient {
     listCollections: vi.fn(async () => []),
     listBoards: vi.fn(async () => []),
     createCollection: vi.fn(),
+    deleteBoard: vi.fn(),
+    deleteCollection: vi.fn(),
     testConnection: vi.fn(),
   };
   return Object.assign(base, overrides);
@@ -161,6 +163,71 @@ describe("handleMessage: github relay", () => {
       ok: false,
       error: "Board not found: missing.excalidraw",
     });
+  });
+});
+
+describe("handleMessage: github deletion", () => {
+  it("delegates github:deleteBoard with path and sha and returns null", async () => {
+    const settings = createMemorySettingsStore({
+      token: "t",
+      owner: "acme",
+      repo: "boards",
+    });
+    const deleteBoard = vi.fn(async () => undefined);
+    const res = await handleMessage(
+      { type: "github:deleteBoard", path: "excalidraw/design/flow.excalidraw", sha: "blob-1" },
+      { settings, createClient: () => fakeClient({ deleteBoard }) },
+    );
+
+    expect(deleteBoard).toHaveBeenCalledWith(
+      "excalidraw/design/flow.excalidraw",
+      "blob-1",
+    );
+    expect(res).toEqual({ ok: true, data: null });
+  });
+
+  it("delegates github:deleteCollection with the slug and returns the result", async () => {
+    const settings = createMemorySettingsStore({
+      token: "t",
+      owner: "acme",
+      repo: "boards",
+    });
+    const result = { deletedBoards: 2, failures: [] };
+    const deleteCollection = vi.fn(async () => result);
+    const res = await handleMessage(
+      { type: "github:deleteCollection", slug: "design" },
+      { settings, createClient: () => fakeClient({ deleteCollection }) },
+    );
+
+    expect(deleteCollection).toHaveBeenCalledWith("design");
+    expect(res).toEqual({ ok: true, data: result });
+  });
+
+  it("refuses both delete calls without a token, before reaching the client", async () => {
+    const settings = createMemorySettingsStore({ owner: "acme", repo: "boards" });
+    const deleteBoard = vi.fn();
+    const deleteCollection = vi.fn();
+    const deps = {
+      settings,
+      createClient: () => fakeClient({ deleteBoard, deleteCollection }),
+    };
+
+    const boardRes = await handleMessage(
+      { type: "github:deleteBoard", path: "excalidraw/design/flow.excalidraw", sha: "s" },
+      deps,
+    );
+    const collectionRes = await handleMessage(
+      { type: "github:deleteCollection", slug: "design" },
+      deps,
+    );
+
+    expect(boardRes).toEqual({ ok: false, error: "No GitHub token configured." });
+    expect(collectionRes).toEqual({
+      ok: false,
+      error: "No GitHub token configured.",
+    });
+    expect(deleteBoard).not.toHaveBeenCalled();
+    expect(deleteCollection).not.toHaveBeenCalled();
   });
 });
 

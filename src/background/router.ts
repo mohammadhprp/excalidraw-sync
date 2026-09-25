@@ -97,6 +97,16 @@ export async function handleMessage(
           ).saveBoard(req.path, req.scene, req.baseSha, req.message),
         };
 
+      case "github:deleteBoard":
+        await (await client()).deleteBoard(req.path, req.sha);
+        return { ok: true, data: null };
+
+      case "github:deleteCollection":
+        return {
+          ok: true,
+          data: await (await client()).deleteCollection(req.slug),
+        };
+
       default: {
         const unexpected: never = req;
         return { ok: false, error: `Unknown message: ${JSON.stringify(unexpected)}` };

@@ -55,6 +55,16 @@ export type SyncOutcome =
   | { status: "conflict"; remoteSha: string; baseSha: string | null }
   | { status: "unchanged"; sha: string | null };
 
+/**
+ * Outcome of deleting a whole collection. `deletedBoards` counts the board
+ * files removed; `failures` holds one `"<path>: <error>"` entry per board (or
+ * name marker) that could not be deleted.
+ */
+export interface CollectionDeleteResult {
+  deletedBoards: number;
+  failures: string[];
+}
+
 /** Commit author/committer identity. GitHub requires both name and email. */
 export interface AuthorIdentity {
   name: string;
@@ -96,7 +106,9 @@ export type Req =
       scene: SceneFile;
       baseSha: string | null;
       message?: string;
-    };
+    }
+  | { type: "github:deleteBoard"; path: string; sha: string }
+  | { type: "github:deleteCollection"; slug: string };
 
 export type Res<T> = { ok: true; data: T } | { ok: false; error: string };
 
